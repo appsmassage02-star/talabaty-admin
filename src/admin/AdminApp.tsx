@@ -19,6 +19,7 @@ import { AdminSettings } from './components/AdminSettings';
 import { AdminAppAssets } from './components/AdminAppAssets';
 import { AdminInvoicesPurchasing } from './components/AdminInvoicesPurchasing';
 import { AdminPharmacyManagement } from './components/AdminPharmacyManagement';
+import { AdminRestaurantManagement } from './components/AdminRestaurantManagement';
 import { CheckCircle2, AlertTriangle, AlertCircle, Info, RefreshCw, ShieldCheck } from 'lucide-react';
 
 const SPLASH_STAGES = [
@@ -229,6 +230,19 @@ const AdminContent: React.FC = () => {
       case 'pharmacy_pharmacies':
       case 'pharmacy_settings':
         return <AdminPharmacyManagement />;
+      case 'restaurant_overview':
+      case 'restaurant_restaurants':
+      case 'restaurant_categories':
+      case 'restaurant_menu':
+      case 'restaurant_options':
+      case 'restaurant_offers':
+      case 'restaurant_orders':
+      case 'restaurant_delivery':
+      case 'restaurant_invoices':
+      case 'restaurant_settlements':
+      case 'restaurant_complaints':
+      case 'restaurant_settings':
+        return <AdminRestaurantManagement />;
       case 'users':
         return <AdminUsers />;
       case 'households':

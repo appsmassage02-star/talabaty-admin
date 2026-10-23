@@ -165,6 +165,7 @@ export const AdminProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       return (
         permission.startsWith('categories.') ||
         permission.startsWith('products.') ||
+        permission.startsWith('restaurants.') ||
         permission === 'notifications.send' ||
         permission === 'dashboard.view' ||
         permission === 'analytics.view'
@@ -176,6 +177,7 @@ export const AdminProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         permission === 'dashboard.view' ||
         permission.startsWith('users.') ||
         permission.startsWith('delivery.') ||
+        permission.startsWith('restaurants.') ||
         permission === 'households.view' ||
         permission === 'invoices.view' ||
         permission === 'audit.view' ||

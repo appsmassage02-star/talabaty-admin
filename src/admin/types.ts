@@ -32,7 +32,11 @@ export type AdminPermission =
   | 'settings.manage'
   | 'admins.manage'
   | 'admins.delete'
-  | 'audit.view';
+  | 'audit.view'
+  | 'restaurants.view'
+  | 'restaurants.manage';
+
+export * from './types/restaurantAdminTypes';
 
 export interface AdminUser {
   id: string;
