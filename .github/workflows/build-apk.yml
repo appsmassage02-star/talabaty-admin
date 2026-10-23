@@ -1,0 +1,77 @@
+name: Build Admin Dashboard Android APK
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  pull_request:
+    branches: [ "main", "master" ]
+  workflow_dispatch:
+
+jobs:
+  build-apk:
+    name: Build Capacitor Android APK
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 📥 Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: 🟢 Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: ☕ Set up Java Development Kit (JDK 21)
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '21'
+          cache: 'gradle'
+
+      - name: 📱 Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: 'platform-tools'
+
+      - name: 🛠️ Install Android SDK Packages
+        run: |
+          sdkmanager "platform-tools"
+          sdkmanager "platforms;android-36"
+          sdkmanager "build-tools;36.0.0"
+
+      - name: 📦 Install npm Dependencies
+        run: npm ci || npm install
+
+      - name: 🔨 Build Vite Web Application
+        env:
+          VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL || 'https://ukwzixktqwmckytakdjx.supabase.co' }}
+          VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
+        run: |
+          if [ -z "$VITE_SUPABASE_URL" ] || [ "$VITE_SUPABASE_URL" = "https://placeholder.supabase.co" ]; then
+            echo "::error::VITE_SUPABASE_URL is missing or invalid. Please configure it in GitHub Repository Secrets with https://ukwzixktqwmckytakdjx.supabase.co"
+            exit 1
+          fi
+          if [ -z "$VITE_SUPABASE_ANON_KEY" ] || [ "$VITE_SUPABASE_ANON_KEY" = "placeholder-anon-key" ]; then
+            echo "::error::VITE_SUPABASE_ANON_KEY secret is missing. Please configure VITE_SUPABASE_ANON_KEY in GitHub Repository Secrets with your Supabase anon/publishable key."
+            exit 1
+          fi
+          npm run build
+
+      - name: 🔄 Sync Capacitor Android Platform
+        run: npx cap sync android
+
+      - name: 🔑 Make Gradlew Executable
+        run: chmod +x android/gradlew
+
+      - name: 🏗️ Assemble Debug APK
+        run: |
+          cd android
+          ./gradlew assembleDebug --stacktrace --no-daemon
+
+      - name: 📤 Upload Debug APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: talabat-albayt-admin-debug-apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 14

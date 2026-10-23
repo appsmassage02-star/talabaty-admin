@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Talabat Al-Bayt Admin</string>
+    <string name="title_activity_main">Talabat Al-Bayt Admin</string>
+    <string name="package_name">com.talabatalbayt.admin</string>
+    <string name="custom_url_scheme">com.talabatalbayt.admin</string>
+</resources>

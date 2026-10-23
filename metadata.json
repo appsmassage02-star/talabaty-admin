@@ -1,0 +1,6 @@
+{
+  "name": "طلبات البيت — لوحة التحكم الإدارية",
+  "description": "مركز تحكم إداري شامل واحترافي لتطبيق طلبات البيت مع إدارة المستخدمين والمنازل والأقسام والمنتجات والإشعارات والتحليلات وسجل العمليات.",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
