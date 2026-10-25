@@ -1,6 +1,17 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { useAdmin } from '../context/AdminContext';
 import { restaurantAdminService } from '../services/restaurantAdminService';
+import { RestaurantImageUploader } from './RestaurantImageUploader';
+import { RestaurantLocationPickerModal } from './RestaurantLocationPickerModal';
+import { resolveRestaurantImageSrc } from '../services/restaurantImageService';
+
+// Safe number-to-input-value helper to prevent React NaN attribute warnings
+const toInputNumber = (val: any, fallback: string | number = ''): string | number => {
+  if (val === undefined || val === null) return fallback;
+  const num = Number(val);
+  return isNaN(num) ? fallback : num;
+};
+
 import {
   Restaurant,
   RestaurantCategory,
@@ -19,6 +30,11 @@ import {
   RestaurantOwnershipHistory,
   RestaurantSectionSettings,
   RestaurantOverviewStats,
+  FoodGovernorate,
+  FoodCenter,
+  FoodArea,
+  RestaurantServiceArea,
+  RestaurantAreaDeliveryFee,
 } from '../types/restaurantAdminTypes';
 import {
   UtensilsCrossed,
@@ -59,6 +75,10 @@ import {
   Check,
   Ban,
   Building,
+  Navigation,
+  Crosshair,
+  Compass,
+  Truck,
 } from 'lucide-react';
 
 export type RestaurantNavTab =
@@ -128,7 +148,14 @@ export const AdminRestaurantManagement: React.FC = () => {
   const [isLoading, setIsLoading] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedRestaurantFilter, setSelectedRestaurantFilter] = useState('all');
-  const [statusFilter, setStatusFilter] = useState('all');
+
+  // Independent Status Filters per domain
+  const [restaurantStatusFilter, setRestaurantStatusFilter] = useState<'all' | 'active' | 'inactive' | 'open' | 'closed'>('all');
+  const [orderStatusFilter, setOrderStatusFilter] = useState<'all' | 'pending' | 'restaurant_confirmed' | 'cooking' | 'ready_for_pickup' | 'in_delivery' | 'completed' | 'cancelled'>('all');
+  const [deliveryStatusFilter, setDeliveryStatusFilter] = useState<'all' | 'pending' | 'assigned' | 'picked_up' | 'delivered' | 'cancelled'>('all');
+  const [invoiceStatusFilter, setInvoiceStatusFilter] = useState<'all' | 'issued' | 'paid' | 'pending' | 'cancelled'>('all');
+  const [settlementStatusFilter, setSettlementStatusFilter] = useState<'all' | 'pending' | 'open' | 'closed' | 'completed'>('all');
+  const [complaintStatusFilter, setComplaintStatusFilter] = useState<'all' | 'open' | 'pending' | 'resolved' | 'closed'>('all');
 
   // Modals & Details State
   const [activeOrderDetails, setActiveOrderDetails] = useState<RestaurantOrder | null>(null);
@@ -136,6 +163,7 @@ export const AdminRestaurantManagement: React.FC = () => {
 
   const [isRestaurantModalOpen, setIsRestaurantModalOpen] = useState(false);
   const [editingRestaurant, setEditingRestaurant] = useState<Partial<Restaurant> & { category_ids?: string[] } | null>(null);
+  const [isMapPickerOpen, setIsMapPickerOpen] = useState(false);
 
   const [isCategoryModalOpen, setIsCategoryModalOpen] = useState(false);
   const [editingCategory, setEditingCategory] = useState<Partial<RestaurantCategory> | null>(null);
@@ -157,6 +185,29 @@ export const AdminRestaurantManagement: React.FC = () => {
 
   const [isSaving, setIsSaving] = useState(false);
 
+  // Egyptian Administrative Address Hierarchy State
+  const [governorates, setGovernorates] = useState<FoodGovernorate[]>([]);
+  const [restaurantCenters, setRestaurantCenters] = useState<FoodCenter[]>([]);
+  const [restaurantAreas, setRestaurantAreas] = useState<FoodArea[]>([]);
+  const [isLoadingAddressHierarchy, setIsLoadingAddressHierarchy] = useState(false);
+  const [isDetectingLocation, setIsDetectingLocation] = useState(false);
+
+  // Delivery Service Areas & Fees State
+  const [isServiceAreasModalOpen, setIsServiceAreasModalOpen] = useState(false);
+  const [selectedRestaurantForAreas, setSelectedRestaurantForAreas] = useState<Restaurant | null>(null);
+  const [restaurantServiceAreas, setRestaurantServiceAreas] = useState<RestaurantServiceArea[]>([]);
+  const [isLoadingServiceAreas, setIsLoadingServiceAreas] = useState(false);
+  const [serviceAreaCenters, setServiceAreaCenters] = useState<FoodCenter[]>([]);
+  const [serviceAreaAreas, setServiceAreaAreas] = useState<FoodArea[]>([]);
+  const [newServiceAreaForm, setNewServiceAreaForm] = useState({
+    governorate_id: '',
+    center_id: '',
+    area_id: '',
+    delivery_fee: 15,
+    is_active: true,
+  });
+  const [isSavingServiceArea, setIsSavingServiceArea] = useState(false);
+
   // =========================================================================
   // DATA LOADERS
   // =========================================================================
@@ -171,13 +222,13 @@ export const AdminRestaurantManagement: React.FC = () => {
     setIsLoading(true);
     const res = await restaurantAdminService.getRestaurants({
       search: searchQuery,
-      isActive: statusFilter === 'active' ? true : statusFilter === 'inactive' ? false : 'all',
-      isOpen: statusFilter === 'open' ? true : statusFilter === 'closed' ? false : 'all',
+      isActive: restaurantStatusFilter === 'active' ? true : restaurantStatusFilter === 'inactive' ? false : 'all',
+      isOpen: restaurantStatusFilter === 'open' ? true : restaurantStatusFilter === 'closed' ? false : 'all',
     });
     if (res.error) showToast(res.error, 'error');
     setRestaurants(res.restaurants || []);
     setIsLoading(false);
-  }, [searchQuery, statusFilter, showToast]);
+  }, [searchQuery, restaurantStatusFilter, showToast]);
 
   const loadCategories = useCallback(async () => {
     setIsLoading(true);
@@ -223,58 +274,58 @@ export const AdminRestaurantManagement: React.FC = () => {
     setIsLoading(true);
     const res = await restaurantAdminService.getOrders({
       restaurantId: selectedRestaurantFilter,
-      status: statusFilter,
+      status: orderStatusFilter,
       search: searchQuery,
     });
     if (res.error) showToast(res.error, 'error');
     setOrders(res.orders || []);
     setIsLoading(false);
-  }, [selectedRestaurantFilter, statusFilter, searchQuery, showToast]);
+  }, [selectedRestaurantFilter, orderStatusFilter, searchQuery, showToast]);
 
   const loadDelivery = useCallback(async () => {
     setIsLoading(true);
     const res = await restaurantAdminService.getDeliveryOrders({
-      status: statusFilter,
+      status: deliveryStatusFilter,
     });
     if (res.error) showToast(res.error, 'error');
     setDeliveryOrders(res.deliveryOrders || []);
     setIsLoading(false);
-  }, [statusFilter, showToast]);
+  }, [deliveryStatusFilter, showToast]);
 
   const loadInvoices = useCallback(async () => {
     setIsLoading(true);
     const res = await restaurantAdminService.getInvoices({
-      status: statusFilter,
+      status: invoiceStatusFilter,
       search: searchQuery,
     });
     if (res.error) showToast(res.error, 'error');
     setInvoices(res.invoices || []);
     setIsLoading(false);
-  }, [statusFilter, searchQuery, showToast]);
+  }, [invoiceStatusFilter, searchQuery, showToast]);
 
   const loadSettlements = useCallback(async () => {
     setIsLoading(true);
     const [txRes, setRes] = await Promise.all([
       restaurantAdminService.getFinancialTransactions({ restaurantId: selectedRestaurantFilter }),
-      restaurantAdminService.getSettlements({ restaurantId: selectedRestaurantFilter, status: statusFilter }),
+      restaurantAdminService.getSettlements({ restaurantId: selectedRestaurantFilter, status: settlementStatusFilter }),
     ]);
     if (txRes.error) showToast(txRes.error, 'error');
     if (setRes.error) showToast(setRes.error, 'error');
     setTransactions(txRes.transactions || []);
     setSettlements(setRes.settlements || []);
     setIsLoading(false);
-  }, [selectedRestaurantFilter, statusFilter, showToast]);
+  }, [selectedRestaurantFilter, settlementStatusFilter, showToast]);
 
   const loadComplaints = useCallback(async () => {
     setIsLoading(true);
     const res = await restaurantAdminService.getComplaints({
       restaurantId: selectedRestaurantFilter,
-      status: statusFilter,
+      status: complaintStatusFilter,
     });
     if (res.error) showToast(res.error, 'error');
     setComplaints(res.complaints || []);
     setIsLoading(false);
-  }, [selectedRestaurantFilter, statusFilter, showToast]);
+  }, [selectedRestaurantFilter, complaintStatusFilter, showToast]);
 
   const loadSettingsAndHistory = useCallback(async () => {
     setIsLoading(true);
@@ -300,7 +351,317 @@ export const AdminRestaurantManagement: React.FC = () => {
     restaurantAdminService.getCategories().then((c) => {
       if (c.categories) setCategories(c.categories);
     });
+    // Preload Egyptian governorates list
+    restaurantAdminService.getFoodGovernorates().then((g) => {
+      if (g.governorates) setGovernorates(g.governorates);
+    });
   }, [loadStats]);
+
+  // =========================================================================
+  // RESTAURANT ADDRESS & GPS HANDLERS
+  // =========================================================================
+  const handleOpenAddRestaurant = useCallback(() => {
+    if (!hasPermission('restaurants.manage')) {
+      showToast('ليس لديك صلاحية لإضافة مطعم جديد', 'error');
+      return;
+    }
+    setRestaurantCenters([]);
+    setRestaurantAreas([]);
+    setEditingRestaurant({
+      name: '',
+      phone: '',
+      address: '',
+      country_name: 'مصر',
+      governorate_id: null,
+      center_id: null,
+      area_id: null,
+      street: '',
+      detailed_address: '',
+      latitude: undefined,
+      longitude: undefined,
+      is_active: true,
+      is_open: true,
+      max_delivery_radius_km: 15,
+      commission_percent: 10,
+      delivery_fee: 15,
+      food_money_settlement_mode: 'cash_on_delivery',
+      category_ids: [],
+    });
+    setIsRestaurantModalOpen(true);
+  }, [hasPermission, showToast]);
+
+  const handleOpenEditRestaurant = useCallback(async (rest: Restaurant) => {
+    if (!hasPermission('restaurants.manage')) {
+      showToast('ليس لديك صلاحية لتعديل بيانات المطعم', 'error');
+      return;
+    }
+    // Load category links directly from DB to ensure complete pre-population
+    let currentCategoryIds = rest.categories?.map((c) => c.id) || [];
+    try {
+      const linkedIds = await restaurantAdminService.getRestaurantCategoryIds(rest.id);
+      if (linkedIds && linkedIds.length > 0) {
+        currentCategoryIds = linkedIds;
+      }
+    } catch {}
+
+    const safeSettlementMode =
+      rest.food_money_settlement_mode &&
+      ['cash_on_delivery', 'online_direct', 'wallet'].includes(rest.food_money_settlement_mode)
+        ? rest.food_money_settlement_mode
+        : 'cash_on_delivery';
+
+    setEditingRestaurant({
+      ...rest,
+      country_name: rest.country_name || 'مصر',
+      governorate_id: rest.governorate_id || null,
+      center_id: rest.center_id || null,
+      area_id: rest.area_id || null,
+      street: rest.street || '',
+      detailed_address: rest.detailed_address || '',
+      food_money_settlement_mode: safeSettlementMode,
+      category_ids: currentCategoryIds,
+    });
+    setIsRestaurantModalOpen(true);
+
+    // Cascading address load for the existing restaurant
+    if (rest.governorate_id) {
+      setIsLoadingAddressHierarchy(true);
+      const cRes = await restaurantAdminService.getFoodCenters(rest.governorate_id);
+      setRestaurantCenters(cRes.centers || []);
+      if (rest.center_id) {
+        const aRes = await restaurantAdminService.getFoodAreas(rest.center_id, rest.governorate_id);
+        setRestaurantAreas(aRes.areas || []);
+      } else {
+        setRestaurantAreas([]);
+      }
+      setIsLoadingAddressHierarchy(false);
+    } else {
+      setRestaurantCenters([]);
+      setRestaurantAreas([]);
+    }
+  }, [hasPermission, showToast]);
+
+  const handleRestaurantGovChange = async (govId: string) => {
+    setEditingRestaurant((prev) =>
+      prev
+        ? {
+            ...prev,
+            governorate_id: govId || null,
+            center_id: null,
+            area_id: null,
+          }
+        : null
+    );
+    setRestaurantAreas([]);
+    if (govId) {
+      setIsLoadingAddressHierarchy(true);
+      const res = await restaurantAdminService.getFoodCenters(govId);
+      setRestaurantCenters(res.centers || []);
+      setIsLoadingAddressHierarchy(false);
+    } else {
+      setRestaurantCenters([]);
+    }
+  };
+
+  const handleRestaurantCenterChange = async (centerId: string) => {
+    setEditingRestaurant((prev) =>
+      prev
+        ? {
+            ...prev,
+            center_id: centerId || null,
+            area_id: null,
+          }
+        : null
+    );
+    if (centerId && editingRestaurant?.governorate_id) {
+      setIsLoadingAddressHierarchy(true);
+      const res = await restaurantAdminService.getFoodAreas(centerId, editingRestaurant.governorate_id);
+      setRestaurantAreas(res.areas || []);
+      setIsLoadingAddressHierarchy(false);
+    } else {
+      setRestaurantAreas([]);
+    }
+  };
+
+  const handleDetectGPSLocation = () => {
+    if (!navigator.geolocation) {
+      showToast('متصفحك لا يدعم تحديد الموقع الجغرافي (GPS)', 'error');
+      return;
+    }
+
+    setIsDetectingLocation(true);
+
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        setIsDetectingLocation(false);
+        const lat = parseFloat(pos.coords.latitude.toFixed(6));
+        const lng = parseFloat(pos.coords.longitude.toFixed(6));
+        setEditingRestaurant((prev) =>
+          prev
+            ? {
+                ...prev,
+                latitude: lat,
+                longitude: lng,
+              }
+            : null
+        );
+        showToast(`تم التقاط الإحداثيات بنجاح: (${lat}, ${lng})`, 'success');
+      },
+      (err) => {
+        setIsDetectingLocation(false);
+        let msg = 'تعذر الحصول على إحداثيات الموقع الحالي.';
+        if (err.code === err.PERMISSION_DENIED) {
+          msg = 'تم رفض صلاحية الوصول للموقع الجغرافي. يرجى تفعيل إذن الموقع من إعدادات المتصفح (رمز القفل بجانب شريط العنوان) أو الضغط على "تحديد الموقع على الخريطة" لاختيار الموقع يدوياً.';
+        } else if (err.code === err.POSITION_UNAVAILABLE) {
+          msg = 'بيانات إشارة GPS غير متوفرة حالياً من جهازك. يرجى التأكد من تشغيل خدمات الموقع بالجهاز أو تحديد الموقع عبر الخريطة.';
+        } else if (err.code === err.TIMEOUT) {
+          msg = 'انتهت مهلة انتظار استجابة نظام GPS (15 ثانية). يمكنك المحاولة مرة أخرى أو تحديد الموقع مباشرة عبر الخريطة.';
+        }
+        showToast(msg, 'error');
+      },
+      {
+        enableHighAccuracy: true,
+        timeout: 15000,
+        maximumAge: 0,
+      }
+    );
+  };
+
+  // =========================================================================
+  // DELIVERY SERVICE AREAS HANDLERS
+  // =========================================================================
+  const handleOpenServiceAreasModal = async (rest: Restaurant) => {
+    setSelectedRestaurantForAreas(rest);
+    setIsServiceAreasModalOpen(true);
+    setIsLoadingServiceAreas(true);
+    setNewServiceAreaForm({
+      governorate_id: rest.governorate_id || '',
+      center_id: rest.center_id || '',
+      area_id: '',
+      delivery_fee: rest.delivery_fee || 15,
+      is_active: true,
+    });
+
+    if (rest.governorate_id) {
+      const cRes = await restaurantAdminService.getFoodCenters(rest.governorate_id);
+      setServiceAreaCenters(cRes.centers || []);
+      if (rest.center_id) {
+        const aRes = await restaurantAdminService.getFoodAreas(rest.center_id, rest.governorate_id);
+        setServiceAreaAreas(aRes.areas || []);
+      } else {
+        setServiceAreaAreas([]);
+      }
+    } else {
+      setServiceAreaCenters([]);
+      setServiceAreaAreas([]);
+    }
+
+    const res = await restaurantAdminService.getRestaurantServiceAreas(rest.id);
+    setRestaurantServiceAreas(res.serviceAreas || []);
+    setIsLoadingServiceAreas(false);
+  };
+
+  const handleServiceAreaGovChange = async (govId: string) => {
+    setNewServiceAreaForm((prev) => ({
+      ...prev,
+      governorate_id: govId,
+      center_id: '',
+      area_id: '',
+    }));
+    setServiceAreaAreas([]);
+    if (govId) {
+      const res = await restaurantAdminService.getFoodCenters(govId);
+      setServiceAreaCenters(res.centers || []);
+    } else {
+      setServiceAreaCenters([]);
+    }
+  };
+
+  const handleServiceAreaCenterChange = async (centerId: string) => {
+    setNewServiceAreaForm((prev) => ({
+      ...prev,
+      center_id: centerId,
+      area_id: '',
+    }));
+    if (centerId && newServiceAreaForm.governorate_id) {
+      const res = await restaurantAdminService.getFoodAreas(centerId, newServiceAreaForm.governorate_id);
+      setServiceAreaAreas(res.areas || []);
+    } else {
+      setServiceAreaAreas([]);
+    }
+  };
+
+  const handleAddServiceArea = async () => {
+    if (!hasPermission('restaurants.manage')) {
+      showToast('ليس لديك صلاحية لتعديل نطاقات التوصيل', 'error');
+      return;
+    }
+    if (!selectedRestaurantForAreas) return;
+    if (!newServiceAreaForm.area_id) {
+      showToast('يرجى اختيار المنطقة لإضافتها إلى نطاق التوصيل', 'error');
+      return;
+    }
+    const fee = Number(newServiceAreaForm.delivery_fee);
+    if (isNaN(fee) || fee < 0) {
+      showToast('يرجى إدخال رسوم توصيل صحيحة (صفر أو أكثر)', 'error');
+      return;
+    }
+
+    setIsSavingServiceArea(true);
+    const res = await restaurantAdminService.upsertRestaurantServiceAreaAndFee({
+      restaurant_id: selectedRestaurantForAreas.id,
+      governorate_id: newServiceAreaForm.governorate_id || null,
+      center_id: newServiceAreaForm.center_id || null,
+      area_id: newServiceAreaForm.area_id,
+      delivery_fee: fee,
+      is_active: newServiceAreaForm.is_active,
+    });
+    setIsSavingServiceArea(false);
+
+    if (res.success) {
+      showToast('تم حفظ نطاق ورسوم التوصيل بنجاح', 'success');
+      const listRes = await restaurantAdminService.getRestaurantServiceAreas(selectedRestaurantForAreas.id);
+      setRestaurantServiceAreas(listRes.serviceAreas || []);
+      setNewServiceAreaForm((prev) => ({ ...prev, area_id: '' }));
+    } else {
+      showToast(res.error || 'تعذر حفظ نطاق التوصيل', 'error');
+    }
+  };
+
+  const handleToggleServiceAreaActive = async (serviceArea: RestaurantServiceArea) => {
+    if (!hasPermission('restaurants.manage')) {
+      showToast('ليس لديك صلاحية لتعديل نطاقات التوصيل', 'error');
+      return;
+    }
+    const nextState = !serviceArea.is_active;
+    const res = await restaurantAdminService.toggleRestaurantServiceArea(serviceArea.id, nextState);
+    if (res.success) {
+      showToast(nextState ? 'تم تفعيل التوصيل للمنطقة' : 'تم تعطيل التوصيل للمنطقة مؤقتاً', 'success');
+      if (selectedRestaurantForAreas) {
+        const listRes = await restaurantAdminService.getRestaurantServiceAreas(selectedRestaurantForAreas.id);
+        setRestaurantServiceAreas(listRes.serviceAreas || []);
+      }
+    } else {
+      showToast(res.error || 'تعذر تغيير حالة المنطقة', 'error');
+    }
+  };
+
+  const handleDeleteServiceArea = async (serviceArea: RestaurantServiceArea) => {
+    if (!hasPermission('restaurants.manage')) {
+      showToast('ليس لديك صلاحية لإزالة نطاقات التوصيل', 'error');
+      return;
+    }
+    const res = await restaurantAdminService.deleteRestaurantServiceArea(serviceArea.id);
+    if (res.success) {
+      showToast('تمت إزالة المنطقة من نطاق التوصيل', 'success');
+      if (selectedRestaurantForAreas) {
+        const listRes = await restaurantAdminService.getRestaurantServiceAreas(selectedRestaurantForAreas.id);
+        setRestaurantServiceAreas(listRes.serviceAreas || []);
+      }
+    } else {
+      showToast(res.error || 'تعذر إزالة المنطقة', 'error');
+    }
+  };
 
   useEffect(() => {
     switch (currentTab) {
@@ -605,8 +966,8 @@ export const AdminRestaurantManagement: React.FC = () => {
                 />
               </div>
               <select
-                value={statusFilter}
-                onChange={(e) => setStatusFilter(e.target.value)}
+                value={restaurantStatusFilter}
+                onChange={(e) => setRestaurantStatusFilter(e.target.value as any)}
                 className="bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-300 outline-none"
               >
                 <option value="all">كل الحالات</option>
@@ -618,23 +979,7 @@ export const AdminRestaurantManagement: React.FC = () => {
             </div>
 
             <button
-              onClick={() => {
-                setEditingRestaurant({
-                  name: '',
-                  phone: '',
-                  address: '',
-                  latitude: 30.0444,
-                  longitude: 31.2357,
-                  is_active: true,
-                  is_open: true,
-                  max_delivery_radius_km: 15,
-                  commission_percent: 10,
-                  delivery_fee: 15,
-                  food_money_settlement_mode: 'periodic_settlement',
-                  category_ids: [],
-                });
-                setIsRestaurantModalOpen(true);
-              }}
+              onClick={handleOpenAddRestaurant}
               className="px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs flex items-center justify-center gap-1.5 cursor-pointer shadow-md shadow-amber-500/20"
             >
               <Plus className="w-4 h-4" />
@@ -655,10 +1000,7 @@ export const AdminRestaurantManagement: React.FC = () => {
                 يمكنك الآن تسجيل أول مطعم في النظام وتحديد نطاق التوصيل ونسبة العمولة.
               </p>
               <button
-                onClick={() => {
-                  setEditingRestaurant({});
-                  setIsRestaurantModalOpen(true);
-                }}
+                onClick={handleOpenAddRestaurant}
                 className="px-4 py-2 rounded-xl bg-amber-500 text-slate-950 text-xs font-bold inline-flex items-center gap-2 cursor-pointer"
               >
                 <Plus className="w-4 h-4" />
@@ -674,11 +1016,14 @@ export const AdminRestaurantManagement: React.FC = () => {
                 >
                   <div className="flex items-start justify-between gap-3">
                     <div className="flex items-center gap-3">
-                      {rest.image_url ? (
+                      {resolveRestaurantImageSrc(rest.image_url) ? (
                         <img
-                          src={rest.image_url}
+                          src={resolveRestaurantImageSrc(rest.image_url)!}
                           alt={rest.name}
                           className="w-12 h-12 rounded-xl object-cover border border-slate-800 shrink-0"
+                          onError={(e) => {
+                            (e.currentTarget as HTMLElement).style.display = 'none';
+                          }}
                         />
                       ) : (
                         <div className="w-12 h-12 rounded-xl bg-slate-800 border border-slate-700 flex items-center justify-center shrink-0">
@@ -716,8 +1061,18 @@ export const AdminRestaurantManagement: React.FC = () => {
                     </div>
                   </div>
 
+                  {/* Administrative Address Hierarchy Badge */}
+                  {(rest.governorate_name || rest.center_name || rest.area_name) && (
+                    <div className="text-[11px] text-amber-400/90 flex items-center gap-1 font-medium bg-amber-500/10 px-2 py-1 rounded-lg border border-amber-500/20">
+                      <Building className="w-3 h-3 text-amber-400 shrink-0" />
+                      <span className="line-clamp-1">
+                        {[rest.governorate_name, rest.center_name, rest.area_name].filter(Boolean).join(' › ')}
+                      </span>
+                    </div>
+                  )}
+
                   <div className="text-xs text-slate-400 line-clamp-2">
-                    <MapPin className="w-3.5 h-3.5 text-slate-500 inline ml-1" />
+                    <MapPin className="w-3.5 h-3.5 text-slate-500 inline ml-1 shrink-0" />
                     <span>{rest.address}</span>
                   </div>
 
@@ -746,9 +1101,21 @@ export const AdminRestaurantManagement: React.FC = () => {
                     </div>
                   </div>
 
-                  <div className="pt-2 flex items-center justify-end gap-2">
+                  <div className="pt-2 flex flex-wrap items-center justify-end gap-1.5">
+                    <button
+                      onClick={() => handleOpenServiceAreasModal(rest)}
+                      className="px-2.5 py-1.5 rounded-lg bg-blue-500/15 hover:bg-blue-500/25 text-blue-300 border border-blue-500/30 text-[11px] font-bold flex items-center gap-1 cursor-pointer transition"
+                      title="إدارة مناطق ورسوم التوصيل"
+                    >
+                      <Truck className="w-3 h-3 text-blue-400" />
+                      <span>مناطق ورسوم التوصيل</span>
+                    </button>
                     <button
                       onClick={async () => {
+                        if (!hasPermission('restaurants.manage')) {
+                          showToast('ليس لديك صلاحية لتعديل حالة تشغيل المطعم', 'error');
+                          return;
+                        }
                         const res = await restaurantAdminService.toggleRestaurantOpen(rest.id, rest.is_open);
                         if (res.success) {
                           showToast('تم تحديث حالة الفتح بنجاح', 'success');
@@ -762,13 +1129,7 @@ export const AdminRestaurantManagement: React.FC = () => {
                       {rest.is_open ? 'إغلاق مؤقت' : 'فتح المطعم'}
                     </button>
                     <button
-                      onClick={() => {
-                        setEditingRestaurant({
-                          ...rest,
-                          category_ids: rest.categories?.map((c) => c.id) || [],
-                        });
-                        setIsRestaurantModalOpen(true);
-                      }}
+                      onClick={() => handleOpenEditRestaurant(rest)}
                       className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-amber-400 text-[11px] font-bold flex items-center gap-1 cursor-pointer"
                     >
                       <Edit3 className="w-3 h-3" />
@@ -872,6 +1233,10 @@ export const AdminRestaurantManagement: React.FC = () => {
                     </button>
                     <button
                       onClick={async () => {
+                        if (!hasPermission('restaurants.manage')) {
+                          showToast('ليس لديك صلاحية لحذف التصنيفات', 'error');
+                          return;
+                        }
                         if (!confirm(`هل أنت متأكد من حذف التصنيف "${cat.name}"؟`)) return;
                         const res = await restaurantAdminService.deleteCategory(cat.id);
                         if (res.success) {
@@ -1009,11 +1374,14 @@ export const AdminRestaurantManagement: React.FC = () => {
                 >
                   <div className="flex items-start justify-between gap-3">
                     <div className="flex items-center gap-3">
-                      {item.image_url ? (
+                      {resolveRestaurantImageSrc(item.image_url) ? (
                         <img
-                          src={item.image_url}
+                          src={resolveRestaurantImageSrc(item.image_url)!}
                           alt={item.name}
                           className="w-12 h-12 rounded-xl object-cover border border-slate-800 shrink-0"
+                          onError={(e) => {
+                            (e.currentTarget as HTMLElement).style.display = 'none';
+                          }}
                         />
                       ) : (
                         <div className="w-12 h-12 rounded-xl bg-slate-800 border border-slate-700 flex items-center justify-center shrink-0">
@@ -1065,6 +1433,10 @@ export const AdminRestaurantManagement: React.FC = () => {
                       </button>
                       <button
                         onClick={async () => {
+                          if (!hasPermission('restaurants.manage')) {
+                            showToast('ليس لديك صلاحية لحذف الأصناف', 'error');
+                            return;
+                          }
                           if (!confirm(`هل أنت متأكد من حذف الصنف "${item.name}"؟`)) return;
                           const res = await restaurantAdminService.deleteMenuItem(item.id);
                           if (res.success) {
@@ -1110,6 +1482,10 @@ export const AdminRestaurantManagement: React.FC = () => {
 
             <button
               onClick={() => {
+                if (!hasPermission('restaurants.manage')) {
+                  showToast('ليس لديك صلاحية لإضافة مجموعات اختيارات', 'error');
+                  return;
+                }
                 setEditingOption({
                   restaurant_id: selectedRestaurantFilter !== 'all' ? selectedRestaurantFilter : (restaurants[0]?.id || ''),
                   menu_item_id: menuItems[0]?.id || '',
@@ -1186,6 +1562,10 @@ export const AdminRestaurantManagement: React.FC = () => {
                   <div className="pt-2 border-t border-slate-800 flex items-center justify-end gap-2">
                     <button
                       onClick={() => {
+                        if (!hasPermission('restaurants.manage')) {
+                          showToast('ليس لديك صلاحية لتعديل مجموعات الاختيار', 'error');
+                          return;
+                        }
                         setEditingOption(opt);
                         setIsOptionModalOpen(true);
                       }}
@@ -1196,6 +1576,10 @@ export const AdminRestaurantManagement: React.FC = () => {
                     </button>
                     <button
                       onClick={async () => {
+                        if (!hasPermission('restaurants.manage')) {
+                          showToast('ليس لديك صلاحية لحذف مجموعة الاختيار', 'error');
+                          return;
+                        }
                         if (!confirm(`هل أنت متأكد من حذف مجموعة الاختيارات "${opt.name}"؟`)) return;
                         const res = await restaurantAdminService.deleteItemOption(opt.id);
                         if (res.success) {
@@ -1226,6 +1610,10 @@ export const AdminRestaurantManagement: React.FC = () => {
             <h3 className="text-sm font-bold text-slate-200">عروض وخصومات المطاعم</h3>
             <button
               onClick={() => {
+                if (!hasPermission('restaurants.manage')) {
+                  showToast('ليس لديك صلاحية لإضافة عروض جديدة', 'error');
+                  return;
+                }
                 setEditingOffer({
                   restaurant_id: selectedRestaurantFilter !== 'all' ? selectedRestaurantFilter : (restaurants[0]?.id || ''),
                   title: '',
@@ -1298,6 +1686,10 @@ export const AdminRestaurantManagement: React.FC = () => {
                   <div className="pt-2 border-t border-slate-800 flex items-center justify-end gap-2">
                     <button
                       onClick={() => {
+                        if (!hasPermission('restaurants.manage')) {
+                          showToast('ليس لديك صلاحية لتعديل العروض', 'error');
+                          return;
+                        }
                         setEditingOffer(offer);
                         setIsOfferModalOpen(true);
                       }}
@@ -1308,6 +1700,10 @@ export const AdminRestaurantManagement: React.FC = () => {
                     </button>
                     <button
                       onClick={async () => {
+                        if (!hasPermission('restaurants.manage')) {
+                          showToast('ليس لديك صلاحية لحذف العرض', 'error');
+                          return;
+                        }
                         if (!confirm(`هل أنت متأكد من حذف العرض "${offer.title}"؟`)) return;
                         const res = await restaurantAdminService.deleteOffer(offer.id);
                         if (res.success) {
@@ -1348,8 +1744,8 @@ export const AdminRestaurantManagement: React.FC = () => {
               </div>
 
               <select
-                value={statusFilter}
-                onChange={(e) => setStatusFilter(e.target.value)}
+                value={orderStatusFilter}
+                onChange={(e) => setOrderStatusFilter(e.target.value as any)}
                 className="bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-300 outline-none"
               >
                 <option value="all">كل الحالات</option>
@@ -1446,8 +1842,23 @@ export const AdminRestaurantManagement: React.FC = () => {
           ===================================================================== */}
       {currentTab === 'restaurant_delivery' && (
         <div className="space-y-4">
-          <div className="flex items-center justify-between">
-            <h3 className="text-sm font-bold text-slate-200">عمليات توصيل طلبات المطاعم</h3>
+          <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
+            <div>
+              <h3 className="text-sm font-bold text-slate-200">عمليات توصيل طلبات المطاعم (متابعة تشغيلية)</h3>
+              <p className="text-[11px] text-slate-400">متابعة حالة المناديب والطلبات في الوقت الفعلي من قاعدة البيانات</p>
+            </div>
+            <select
+              value={deliveryStatusFilter}
+              onChange={(e) => setDeliveryStatusFilter(e.target.value as any)}
+              className="bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-300 outline-none"
+            >
+              <option value="all">كل الحالات</option>
+              <option value="pending">بانتظار التعيين (pending)</option>
+              <option value="assigned">تم تعيين مندوب (assigned)</option>
+              <option value="picked_up">تم الاستلام من المطعم (picked_up)</option>
+              <option value="delivered">تم التسليم للعميل (delivered)</option>
+              <option value="cancelled">ملغي (cancelled)</option>
+            </select>
           </div>
 
           {isLoading ? (
@@ -1458,7 +1869,7 @@ export const AdminRestaurantManagement: React.FC = () => {
           ) : deliveryOrders.length === 0 ? (
             <div className="p-12 text-center bg-slate-900/60 border border-slate-800 rounded-3xl space-y-3">
               <Bike className="w-12 h-12 text-slate-600 mx-auto" />
-              <div className="text-sm font-bold text-slate-300">لا توجد عمليات توصيل حالية</div>
+              <div className="text-sm font-bold text-slate-300">لا توجد عمليات توصيل مطابقة للفلتر</div>
             </div>
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -1502,8 +1913,22 @@ export const AdminRestaurantManagement: React.FC = () => {
           ===================================================================== */}
       {currentTab === 'restaurant_invoices' && (
         <div className="space-y-4">
-          <div className="flex items-center justify-between">
-            <h3 className="text-sm font-bold text-slate-200">فواتير طلبات المطاعم</h3>
+          <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
+            <div>
+              <h3 className="text-sm font-bold text-slate-200">فواتير طلبات المطاعم (سجل مالي للقراءة)</h3>
+              <p className="text-[11px] text-slate-400">الفواتير المحررة آلياً من منصة الطلبات مع تفاصيل المبالغ</p>
+            </div>
+            <select
+              value={invoiceStatusFilter}
+              onChange={(e) => setInvoiceStatusFilter(e.target.value as any)}
+              className="bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-300 outline-none"
+            >
+              <option value="all">كل الحالات</option>
+              <option value="issued">مصدرة (issued)</option>
+              <option value="paid">مدفوعة (paid)</option>
+              <option value="pending">معلقة (pending)</option>
+              <option value="cancelled">ملغاة (cancelled)</option>
+            </select>
           </div>
 
           {isLoading ? (
@@ -1611,14 +2036,27 @@ export const AdminRestaurantManagement: React.FC = () => {
 
           {/* Settlements History */}
           <div className="space-y-3">
-            <h3 className="text-sm font-bold text-slate-200 flex items-center gap-2">
-              <Wallet className="w-4 h-4 text-purple-400" />
-              <span>سجل التسويات الدورية</span>
-            </h3>
+            <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
+              <h3 className="text-sm font-bold text-slate-200 flex items-center gap-2">
+                <Wallet className="w-4 h-4 text-purple-400" />
+                <span>سجل التسويات الدورية (عرض ومراجعة)</span>
+              </h3>
+              <select
+                value={settlementStatusFilter}
+                onChange={(e) => setSettlementStatusFilter(e.target.value as any)}
+                className="bg-slate-900 border border-slate-800 rounded-xl px-3 py-1.5 text-xs text-slate-300 outline-none"
+              >
+                <option value="all">كل الحالات</option>
+                <option value="pending">قيد الانتظار (pending)</option>
+                <option value="open">مفتوحة (open)</option>
+                <option value="closed">مغلقة (closed)</option>
+                <option value="completed">مكتملة (completed)</option>
+              </select>
+            </div>
 
             {settlements.length === 0 ? (
               <div className="p-8 text-center bg-slate-900/60 border border-slate-800 rounded-2xl text-xs text-slate-500">
-                لا توجد تسويات دورية مسجلة
+                لا توجد تسويات دورية مسجلة مطابقة للفلتر
               </div>
             ) : (
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -1650,8 +2088,22 @@ export const AdminRestaurantManagement: React.FC = () => {
           ===================================================================== */}
       {currentTab === 'restaurant_complaints' && (
         <div className="space-y-4">
-          <div className="flex items-center justify-between">
-            <h3 className="text-sm font-bold text-slate-200">شكاوى العملاء على المطاعم والطلبات</h3>
+          <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
+            <div>
+              <h3 className="text-sm font-bold text-slate-200">شكاوى العملاء على المطاعم والطلبات</h3>
+              <p className="text-[11px] text-slate-400">متابعة شكاوى المستخدمين وتوثيق الحلول المتخذة</p>
+            </div>
+            <select
+              value={complaintStatusFilter}
+              onChange={(e) => setComplaintStatusFilter(e.target.value as any)}
+              className="bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-300 outline-none"
+            >
+              <option value="all">كل حالات الشكاوى</option>
+              <option value="open">مفتوحة (open)</option>
+              <option value="pending">قيد المراجعة (pending)</option>
+              <option value="resolved">تم الحل (resolved)</option>
+              <option value="closed">مغلقة (closed)</option>
+            </select>
           </div>
 
           {isLoading ? (
@@ -1744,6 +2196,10 @@ export const AdminRestaurantManagement: React.FC = () => {
                       type="button"
                       disabled={isSaving}
                       onClick={async () => {
+                        if (!hasPermission('restaurants.manage')) {
+                          showToast('ليس لديك صلاحية لتعديل إعدادات القسم', 'error');
+                          return;
+                        }
                         setIsSaving(true);
                         const res = await restaurantAdminService.updateSectionSettings(sectionSettings.id, {
                           section_enabled: !sectionSettings.section_enabled,
@@ -1772,13 +2228,14 @@ export const AdminRestaurantManagement: React.FC = () => {
                   <div className="flex items-center gap-2">
                     <input
                       type="number"
-                      value={sectionSettings.global_max_delivery_radius_km}
-                      onChange={(e) =>
+                      value={toInputNumber(sectionSettings.global_max_delivery_radius_km, 25)}
+                      onChange={(e) => {
+                        const v = e.target.value.trim();
                         setSectionSettings({
                           ...sectionSettings,
-                          global_max_delivery_radius_km: Number(e.target.value),
-                        })
-                      }
+                          global_max_delivery_radius_km: v === '' ? 25 : (isNaN(Number(v)) ? 25 : Number(v)),
+                        });
+                      }}
                       className="w-24 bg-slate-900 border border-slate-700 rounded-xl px-3 py-1.5 text-xs text-white"
                     />
                     <span className="text-xs text-slate-400">كيلومتر</span>
@@ -1786,6 +2243,10 @@ export const AdminRestaurantManagement: React.FC = () => {
                       type="button"
                       disabled={isSaving}
                       onClick={async () => {
+                        if (!hasPermission('restaurants.manage')) {
+                          showToast('ليس لديك صلاحية لتعديل إعدادات القسم', 'error');
+                          return;
+                        }
                         setIsSaving(true);
                         const res = await restaurantAdminService.updateSectionSettings(sectionSettings.id, {
                           global_max_delivery_radius_km: sectionSettings.global_max_delivery_radius_km,
@@ -1809,13 +2270,14 @@ export const AdminRestaurantManagement: React.FC = () => {
                   <div className="flex items-center gap-2">
                     <input
                       type="number"
-                      value={sectionSettings.no_driver_timeout_minutes}
-                      onChange={(e) =>
+                      value={toInputNumber(sectionSettings.no_driver_timeout_minutes, 10)}
+                      onChange={(e) => {
+                        const v = e.target.value.trim();
                         setSectionSettings({
                           ...sectionSettings,
-                          no_driver_timeout_minutes: Number(e.target.value),
-                        })
-                      }
+                          no_driver_timeout_minutes: v === '' ? 10 : (isNaN(Number(v)) ? 10 : Number(v)),
+                        });
+                      }}
                       className="w-24 bg-slate-900 border border-slate-700 rounded-xl px-3 py-1.5 text-xs text-white"
                     />
                     <span className="text-xs text-slate-400">دقيقة</span>
@@ -1823,6 +2285,10 @@ export const AdminRestaurantManagement: React.FC = () => {
                       type="button"
                       disabled={isSaving}
                       onClick={async () => {
+                        if (!hasPermission('restaurants.manage')) {
+                          showToast('ليس لديك صلاحية لتعديل إعدادات القسم', 'error');
+                          return;
+                        }
                         setIsSaving(true);
                         const res = await restaurantAdminService.updateSectionSettings(sectionSettings.id, {
                           no_driver_timeout_minutes: sectionSettings.no_driver_timeout_minutes,
@@ -1918,6 +2384,35 @@ export const AdminRestaurantManagement: React.FC = () => {
               </div>
             </div>
 
+            {/* Delivery Area Snapshot (منطقة التوصيل المعتمدة للطلب) */}
+            {(activeOrderDetails.delivery_area_name_snapshot || activeOrderDetails.delivery_governorate_name_snapshot) && (
+              <div className="p-3.5 rounded-2xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-between gap-3 text-xs">
+                <div className="flex items-center gap-2.5">
+                  <div className="w-8 h-8 rounded-xl bg-amber-500/20 flex items-center justify-center shrink-0">
+                    <MapPin className="w-4 h-4 text-amber-400" />
+                  </div>
+                  <div>
+                    <span className="text-amber-400 font-bold block text-[11px]">منطقة التوصيل المعتمدة (Snapshot):</span>
+                    <span className="text-white font-bold text-xs">
+                      {[
+                        activeOrderDetails.delivery_governorate_name_snapshot,
+                        activeOrderDetails.delivery_center_name_snapshot,
+                        activeOrderDetails.delivery_area_name_snapshot,
+                      ]
+                        .filter(Boolean)
+                        .join(' › ')}
+                    </span>
+                  </div>
+                </div>
+                <div className="text-left shrink-0">
+                  <span className="text-[10px] text-slate-400 block">رسوم توصيل المنطقة:</span>
+                  <span className="font-mono font-bold text-emerald-400 text-xs">
+                    {formatCurrency(activeOrderDetails.delivery_fee)}
+                  </span>
+                </div>
+              </div>
+            )}
+
             {/* Items Snapshot Table */}
             <div className="space-y-2">
               <div className="text-xs font-bold text-slate-300">الأصناف المطلوبة:</div>
@@ -1999,11 +2494,21 @@ export const AdminRestaurantManagement: React.FC = () => {
           ===================================================================== */}
       {isRestaurantModalOpen && editingRestaurant && (
         <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-md flex items-center justify-center p-4">
-          <div className="bg-slate-900 border border-slate-800 rounded-3xl max-w-xl w-full max-h-[90vh] overflow-y-auto p-6 space-y-4 shadow-2xl">
-            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
-              <h3 className="text-base font-black text-white">
-                {editingRestaurant.id ? 'تعديل بيانات المطعم' : 'إضافة مطعم جديد'}
-              </h3>
+          <div className="bg-slate-900 border border-slate-800 rounded-3xl max-w-2xl w-full max-h-[92vh] overflow-y-auto p-6 space-y-5 shadow-2xl">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3.5">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-center">
+                  <Store className="w-4 h-4 text-amber-400" />
+                </div>
+                <div>
+                  <h3 className="text-base font-black text-white">
+                    {editingRestaurant.id ? 'تعديل بيانات المطعم' : 'إضافة مطعم جديد'}
+                  </h3>
+                  <p className="text-[11px] text-slate-400">
+                    تسجيل بيانات المطعم، العنوان الإداري المصري، وإحداثيات الموقع الجغرافي
+                  </p>
+                </div>
+              </div>
               <button
                 onClick={() => setIsRestaurantModalOpen(false)}
                 className="p-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-400 cursor-pointer"
@@ -2012,147 +2517,460 @@ export const AdminRestaurantManagement: React.FC = () => {
               </button>
             </div>
 
-            <div className="space-y-3 text-xs">
-              <div>
-                <label className="block text-slate-300 font-bold mb-1">اسم المطعم *</label>
-                <input
-                  type="text"
-                  value={editingRestaurant.name || ''}
-                  onChange={(e) => setEditingRestaurant({ ...editingRestaurant, name: e.target.value })}
-                  placeholder="مثال: مطعم الشرق للمشويات"
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white outline-none focus:border-amber-500"
-                />
-              </div>
+            <div className="space-y-4 text-xs">
+              {/* Basic Information */}
+              <div className="space-y-3">
+                <div className="font-bold text-slate-300 flex items-center gap-1.5 text-xs border-b border-slate-800/80 pb-1.5">
+                  <Tag className="w-3.5 h-3.5 text-amber-400" />
+                  <span>البيانات الأساسية للمطعم</span>
+                </div>
 
-              <div>
-                <label className="block text-slate-300 font-bold mb-1">الوصف</label>
-                <textarea
-                  value={editingRestaurant.description || ''}
-                  onChange={(e) => setEditingRestaurant({ ...editingRestaurant, description: e.target.value })}
-                  placeholder="وصف مختصر للمطعم والأكلات المميزة..."
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white outline-none focus:border-amber-500 h-16"
-                />
-              </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-slate-300 font-bold mb-1">اسم المطعم *</label>
+                    <input
+                      type="text"
+                      value={editingRestaurant.name || ''}
+                      onChange={(e) => setEditingRestaurant({ ...editingRestaurant, name: e.target.value })}
+                      placeholder="مثال: مطعم الشرق للمشويات"
+                      className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white outline-none focus:border-amber-500"
+                    />
+                  </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-slate-300 font-bold mb-1">رقم الهاتف *</label>
+                    <input
+                      type="text"
+                      value={editingRestaurant.phone || ''}
+                      onChange={(e) => setEditingRestaurant({ ...editingRestaurant, phone: e.target.value })}
+                      placeholder="01xxxxxxxxx"
+                      className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white outline-none focus:border-amber-500"
+                    />
+                  </div>
+                </div>
+
                 <div>
-                  <label className="block text-slate-300 font-bold mb-1">رقم الهاتف *</label>
-                  <input
-                    type="text"
-                    value={editingRestaurant.phone || ''}
-                    onChange={(e) => setEditingRestaurant({ ...editingRestaurant, phone: e.target.value })}
-                    placeholder="01xxxxxxxxx"
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white outline-none focus:border-amber-500"
+                  <label className="block text-slate-300 font-bold mb-1">الوصف</label>
+                  <textarea
+                    value={editingRestaurant.description || ''}
+                    onChange={(e) => setEditingRestaurant({ ...editingRestaurant, description: e.target.value })}
+                    placeholder="وصف مختصر للمطعم والأكلات المميزة وقائمة الطعام..."
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white outline-none focus:border-amber-500 h-16"
                   />
                 </div>
-                <div>
-                  <label className="block text-slate-300 font-bold mb-1">رابط الصورة (Image URL)</label>
-                  <input
-                    type="text"
-                    value={editingRestaurant.image_url || ''}
-                    onChange={(e) => setEditingRestaurant({ ...editingRestaurant, image_url: e.target.value })}
-                    placeholder="https://..."
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white outline-none focus:border-amber-500"
-                  />
-                </div>
-              </div>
 
-              <div>
-                <label className="block text-slate-300 font-bold mb-1">العنوان بالتفصيل *</label>
-                <input
-                  type="text"
-                  value={editingRestaurant.address || ''}
-                  onChange={(e) => setEditingRestaurant({ ...editingRestaurant, address: e.target.value })}
-                  placeholder="الشارع، المنطقة، المحافظة"
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white outline-none focus:border-amber-500"
-                />
-              </div>
-
-              <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-slate-300 font-bold mb-1">خط العرض (Latitude) *</label>
-                  <input
-                    type="number"
-                    step="any"
-                    value={editingRestaurant.latitude ?? 30.0444}
-                    onChange={(e) => setEditingRestaurant({ ...editingRestaurant, latitude: parseFloat(e.target.value) })}
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white outline-none"
-                  />
-                </div>
-                <div>
-                  <label className="block text-slate-300 font-bold mb-1">خط الطول (Longitude) *</label>
-                  <input
-                    type="number"
-                    step="any"
-                    value={editingRestaurant.longitude ?? 31.2357}
-                    onChange={(e) => setEditingRestaurant({ ...editingRestaurant, longitude: parseFloat(e.target.value) })}
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white outline-none"
+                  <RestaurantImageUploader
+                    label="صورة المطعم (الشعار / الواجهة)"
+                    value={editingRestaurant.image_url}
+                    restaurantId={editingRestaurant.id || null}
+                    targetType="restaurant"
+                    targetId={editingRestaurant.id}
+                    onChange={(newPath) => setEditingRestaurant({ ...editingRestaurant, image_url: newPath })}
+                    helpText="يتم رفع الصورة لحاوية الكتالوج restaurant-product-images مع التحقق وحفظ مسارها في قاعدة طلباتي."
                   />
                 </div>
               </div>
 
-              <div className="grid grid-cols-3 gap-3">
-                <div>
-                  <label className="block text-slate-300 font-bold mb-1">نسبة العمولة %</label>
-                  <input
-                    type="number"
-                    value={editingRestaurant.commission_percent ?? 10}
-                    onChange={(e) => setEditingRestaurant({ ...editingRestaurant, commission_percent: parseFloat(e.target.value) })}
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white outline-none"
-                  />
-                </div>
-                <div>
-                  <label className="block text-slate-300 font-bold mb-1">نطاق التوصيل (كم)</label>
-                  <input
-                    type="number"
-                    value={editingRestaurant.max_delivery_radius_km ?? 15}
-                    onChange={(e) => setEditingRestaurant({ ...editingRestaurant, max_delivery_radius_km: parseFloat(e.target.value) })}
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white outline-none"
-                  />
-                </div>
-                <div>
-                  <label className="block text-slate-300 font-bold mb-1">رسوم التوصيل</label>
-                  <input
-                    type="number"
-                    value={editingRestaurant.delivery_fee ?? 15}
-                    onChange={(e) => setEditingRestaurant({ ...editingRestaurant, delivery_fee: parseFloat(e.target.value) })}
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white outline-none"
-                  />
-                </div>
-              </div>
+              {/* Prominent Restaurant Categories Section */}
+              <div className="space-y-3 bg-slate-950/70 p-4 rounded-2xl border border-amber-500/30">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-800 pb-2.5">
+                  <div className="flex items-center gap-2.5">
+                    <div className="w-8 h-8 rounded-xl bg-amber-500/15 border border-amber-500/30 flex items-center justify-center text-amber-400 shrink-0">
+                      <Tag className="w-4 h-4" />
+                    </div>
+                    <div>
+                      <h4 className="font-black text-white text-xs flex items-center gap-2">
+                        <span>تصنيفات المطعم والأكلات *</span>
+                        <span className="text-[10px] px-2 py-0.5 rounded-full font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                          {editingRestaurant.category_ids?.length || 0} محدد
+                        </span>
+                      </h4>
+                      <p className="text-[10px] text-slate-400 mt-0.5">
+                        اختر تصنيفاً واحداً على الأقل لربط المطعم به وظهوره للعملاء في نتائج البحث والفلترة
+                      </p>
+                    </div>
+                  </div>
 
-              {/* Category Links Selector */}
-              <div>
-                <label className="block text-slate-300 font-bold mb-1">التصنيفات المرتبطة بالمطعم</label>
-                <div className="flex flex-wrap gap-2 max-h-32 overflow-y-auto p-2 rounded-xl bg-slate-950 border border-slate-800">
-                  {categories.map((c) => {
-                    const isSelected = (editingRestaurant.category_ids || []).includes(c.id);
-                    return (
+                  {categories.length > 0 && (
+                    <div className="flex items-center gap-1.5 self-start sm:self-center">
                       <button
-                        key={c.id}
                         type="button"
                         onClick={() => {
-                          const current = editingRestaurant.category_ids || [];
-                          const next = isSelected
-                            ? current.filter((id) => id !== c.id)
-                            : [...current, c.id];
-                          setEditingRestaurant({ ...editingRestaurant, category_ids: next });
+                          const allIds = categories.map((c) => c.id);
+                          setEditingRestaurant({ ...editingRestaurant, category_ids: allIds });
                         }}
-                        className={`px-2.5 py-1 rounded-lg text-xs font-bold cursor-pointer transition ${
-                          isSelected
-                            ? 'bg-amber-500 text-slate-950'
-                            : 'bg-slate-900 text-slate-400 hover:text-slate-200'
-                        }`}
+                        className="text-[11px] text-amber-400 hover:text-amber-300 font-bold px-2 py-1 rounded-lg bg-amber-500/10 hover:bg-amber-500/20 transition cursor-pointer"
                       >
-                        {c.name}
+                        تحديد الكل
                       </button>
-                    );
-                  })}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setEditingRestaurant({ ...editingRestaurant, category_ids: [] });
+                        }}
+                        className="text-[11px] text-slate-400 hover:text-slate-300 font-bold px-2 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 transition cursor-pointer"
+                      >
+                        إلغاء التحديد
+                      </button>
+                    </div>
+                  )}
+                </div>
+
+                {categories.length === 0 ? (
+                  <div className="p-3.5 rounded-xl bg-slate-900 border border-slate-800 text-xs text-slate-400 flex items-center gap-2.5">
+                    <AlertCircle className="w-4 h-4 text-amber-400 shrink-0" />
+                    <span>لا توجد تصنيفات معرفة حالياً في جدول التصنيفات. يمكنك إضافتها لاحقاً من تبويب التصنيفات، أو المتابعة الآن.</span>
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2 max-h-48 overflow-y-auto p-1.5 scrollbar-thin">
+                    {categories.map((c) => {
+                      const isSelected = (editingRestaurant.category_ids || []).includes(c.id);
+                      return (
+                        <button
+                          key={c.id}
+                          type="button"
+                          onClick={() => {
+                            const current = editingRestaurant.category_ids || [];
+                            const next = isSelected
+                              ? current.filter((id) => id !== c.id)
+                              : [...current, c.id];
+                            setEditingRestaurant({ ...editingRestaurant, category_ids: next });
+                          }}
+                          className={`p-2.5 rounded-xl border text-right transition cursor-pointer flex items-center justify-between gap-2 ${
+                            isSelected
+                              ? 'bg-amber-500/15 border-amber-500 text-white shadow-sm'
+                              : 'bg-slate-900/80 border-slate-800 text-slate-300 hover:border-slate-700 hover:bg-slate-900'
+                          }`}
+                        >
+                          <div className="flex items-center gap-2 overflow-hidden">
+                            <span className={`w-2 h-2 rounded-full shrink-0 ${isSelected ? 'bg-amber-400' : 'bg-slate-600'}`} />
+                            <span className="text-xs font-bold truncate">{c.name}</span>
+                          </div>
+                          {isSelected && (
+                            <span className="w-4 h-4 rounded-full bg-amber-500 text-slate-950 flex items-center justify-center shrink-0">
+                              <Check className="w-3 h-3 stroke-[3]" />
+                            </span>
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+
+                {editingRestaurant.category_ids && editingRestaurant.category_ids.length === 0 && categories.length > 0 && (
+                  <div className="text-[11px] text-amber-400 font-bold flex items-center gap-1.5 pt-0.5">
+                    <AlertCircle className="w-3.5 h-3.5 text-amber-400" />
+                    <span>يُفضل تحديد تصنيف واحد على الأقل لضمان ظهور المطعم في تصنيفات العملاء</span>
+                  </div>
+                )}
+              </div>
+
+              {/* Egyptian Administrative Address Hierarchy */}
+              <div className="space-y-3 bg-slate-950/60 p-4 rounded-2xl border border-slate-800">
+                <div className="flex items-center justify-between border-b border-slate-800/80 pb-2">
+                  <div className="font-bold text-slate-200 flex items-center gap-1.5 text-xs">
+                    <Building className="w-4 h-4 text-amber-400" />
+                    <span>الهيكل الإداري للعنوان (مصر) *</span>
+                  </div>
+                  {isLoadingAddressHierarchy && (
+                    <div className="flex items-center gap-1 text-[11px] text-amber-400">
+                      <RefreshCw className="w-3 h-3 animate-spin" />
+                      <span>جاري تحميل البيانات...</span>
+                    </div>
+                  )}
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  <div>
+                    <label className="block text-slate-400 font-bold mb-1">1. المحافظة *</label>
+                    <select
+                      value={editingRestaurant.governorate_id || ''}
+                      onChange={(e) => handleRestaurantGovChange(e.target.value)}
+                      className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-white outline-none focus:border-amber-500 text-xs"
+                    >
+                      <option value="">اختر المحافظة</option>
+                      {governorates.map((g) => (
+                        <option key={g.id} value={g.id}>
+                          {g.name_ar}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-slate-400 font-bold mb-1">2. المركز / القسم *</label>
+                    <select
+                      value={editingRestaurant.center_id || ''}
+                      onChange={(e) => handleRestaurantCenterChange(e.target.value)}
+                      disabled={!editingRestaurant.governorate_id || restaurantCenters.length === 0}
+                      className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-white outline-none focus:border-amber-500 text-xs disabled:opacity-50"
+                    >
+                      <option value="">اختر المركز أو القسم</option>
+                      {restaurantCenters.map((c) => (
+                        <option key={c.id} value={c.id}>
+                          {c.name_ar}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-slate-400 font-bold mb-1">3. المنطقة / الحي / القرية *</label>
+                    <select
+                      value={editingRestaurant.area_id || ''}
+                      onChange={(e) => setEditingRestaurant({ ...editingRestaurant, area_id: e.target.value || null })}
+                      disabled={!editingRestaurant.center_id || restaurantAreas.length === 0}
+                      className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-white outline-none focus:border-amber-500 text-xs disabled:opacity-50"
+                    >
+                      <option value="">اختر المنطقة</option>
+                      {restaurantAreas.map((a) => (
+                        <option key={a.id} value={a.id}>
+                          {a.name_ar}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+                  <div>
+                    <label className="block text-slate-400 font-bold mb-1">الشارع (street)</label>
+                    <input
+                      type="text"
+                      value={editingRestaurant.street || ''}
+                      onChange={(e) => setEditingRestaurant({ ...editingRestaurant, street: e.target.value })}
+                      placeholder="اسم الشارع أو الشارع الرئيسي"
+                      className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-white outline-none focus:border-amber-500"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-slate-400 font-bold mb-1">تفاصيل العنوان / علامة مميزة (detailed_address)</label>
+                    <input
+                      type="text"
+                      value={editingRestaurant.detailed_address || ''}
+                      onChange={(e) => setEditingRestaurant({ ...editingRestaurant, detailed_address: e.target.value })}
+                      placeholder="رقم المبنى، الطابق، بجوار علامة شهيرة..."
+                      className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-white outline-none focus:border-amber-500"
+                    />
+                  </div>
+                </div>
+
+                <div className="pt-1">
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="block text-slate-300 font-bold">العنوان المجمع الكامل (address) *</label>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const govObj = governorates.find((g) => g.id === editingRestaurant.governorate_id);
+                        const cenObj = restaurantCenters.find((c) => c.id === editingRestaurant.center_id);
+                        const areaObj = restaurantAreas.find((a) => a.id === editingRestaurant.area_id);
+                        const parts = [
+                          editingRestaurant.detailed_address,
+                          editingRestaurant.street,
+                          areaObj?.name_ar,
+                          cenObj?.name_ar,
+                          govObj?.name_ar,
+                        ].filter(Boolean);
+                        if (parts.length > 0) {
+                          setEditingRestaurant({ ...editingRestaurant, address: parts.join(' - ') });
+                          showToast('تم تكوين العنوان الكامل من الهيكل الإداري', 'success');
+                        } else {
+                          showToast('يرجى اختيار المحافظة والمركز والمنطقة أولاً', 'warning');
+                        }
+                      }}
+                      className="text-[11px] text-amber-400 hover:text-amber-300 font-bold cursor-pointer"
+                    >
+                      توليد تلقائي من الهيكل الإداري
+                    </button>
+                  </div>
+                  <input
+                    type="text"
+                    value={editingRestaurant.address || ''}
+                    onChange={(e) => setEditingRestaurant({ ...editingRestaurant, address: e.target.value })}
+                    placeholder="العنوان الكامل المعروض للعملاء والمندوبين..."
+                    className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-white outline-none focus:border-amber-500"
+                  />
+                </div>
+              </div>
+
+              {/* GPS Coordinates & Map Location */}
+              <div className="space-y-3 bg-slate-950/60 p-4 rounded-2xl border border-slate-800">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-800/80 pb-2">
+                  <div className="font-bold text-slate-200 flex items-center gap-1.5 text-xs">
+                    <MapPin className="w-4 h-4 text-emerald-400" />
+                    <span>إحداثيات الموقع الجغرافي الدقيق *</span>
+                  </div>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <button
+                      type="button"
+                      onClick={() => setIsMapPickerOpen(true)}
+                      className="px-3 py-1.5 rounded-xl bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/30 text-amber-300 font-bold text-[11px] flex items-center justify-center gap-1.5 cursor-pointer transition shadow-sm"
+                    >
+                      <MapPin className="w-3.5 h-3.5 text-amber-400" />
+                      <span>تحديد الموقع على الخريطة (دبوس تفاعلي)</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleDetectGPSLocation}
+                      disabled={isDetectingLocation}
+                      className="px-3 py-1.5 rounded-xl bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/30 text-emerald-300 font-bold text-[11px] flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50 transition"
+                    >
+                      {isDetectingLocation ? (
+                        <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                      ) : (
+                        <Navigation className="w-3.5 h-3.5" />
+                      )}
+                      <span>{isDetectingLocation ? 'جاري التقاط الإحداثيات...' : 'تحديد موقعي الحالي (GPS)'}</span>
+                    </button>
+                  </div>
+                </div>
+
+                <div className="text-[11px] text-slate-400">
+                  يرجى تحديد الموقع الجغرافي الفعلي للمطعم لضمان حساب رسوم التوصيل والمسافات للعملاء بدقة. يمنع استخدام إحداثيات افتراضية عشوائية.
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-slate-400 font-bold mb-1">خط العرض (Latitude) *</label>
+                    <input
+                      type="number"
+                      step="any"
+                      value={toInputNumber(editingRestaurant.latitude, '')}
+                      onChange={(e) => {
+                        const v = e.target.value.trim();
+                        setEditingRestaurant({
+                          ...editingRestaurant,
+                          latitude: v === '' ? undefined : (isNaN(Number(v)) ? undefined : parseFloat(v)),
+                        });
+                      }}
+                      placeholder="مثال: 30.0444"
+                      className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-white outline-none focus:border-amber-500 font-mono text-xs"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-slate-400 font-bold mb-1">خط الطول (Longitude) *</label>
+                    <input
+                      type="number"
+                      step="any"
+                      value={toInputNumber(editingRestaurant.longitude, '')}
+                      onChange={(e) => {
+                        const v = e.target.value.trim();
+                        setEditingRestaurant({
+                          ...editingRestaurant,
+                          longitude: v === '' ? undefined : (isNaN(Number(v)) ? undefined : parseFloat(v)),
+                        });
+                      }}
+                      placeholder="مثال: 31.2357"
+                      className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-white outline-none focus:border-amber-500 font-mono text-xs"
+                    />
+                  </div>
+                </div>
+
+                {/* Map Preview Link */}
+                {editingRestaurant.latitude !== undefined &&
+                  editingRestaurant.longitude !== undefined &&
+                  !isNaN(Number(editingRestaurant.latitude)) &&
+                  !isNaN(Number(editingRestaurant.longitude)) && (
+                    <div className="pt-1 flex items-center justify-between text-[11px]">
+                      <span className="text-emerald-400 flex items-center gap-1">
+                        <Check className="w-3.5 h-3.5" />
+                        <span>تم تعيين الإحداثيات: {Number(editingRestaurant.latitude).toFixed(4)}, {Number(editingRestaurant.longitude).toFixed(4)}</span>
+                      </span>
+                      <a
+                        href={`https://www.google.com/maps?q=${editingRestaurant.latitude},${editingRestaurant.longitude}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-blue-400 hover:text-blue-300 font-bold flex items-center gap-1"
+                      >
+                        <ExternalLink className="w-3 h-3" />
+                        <span>معاينة على خرائط Google</span>
+                      </a>
+                    </div>
+                  )}
+              </div>
+
+              {/* Operational & Financial Settings */}
+              <div className="space-y-3">
+                <div className="font-bold text-slate-300 flex items-center gap-1.5 text-xs border-b border-slate-800/80 pb-1.5">
+                  <Sliders className="w-3.5 h-3.5 text-amber-400" />
+                  <span>الإعدادات المالية ونطاق التوصيل الأساسي</span>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  <div>
+                    <label className="block text-slate-400 font-bold mb-1">نسبة العمولة %</label>
+                    <input
+                      type="number"
+                      min="0"
+                      max="100"
+                      value={toInputNumber(editingRestaurant.commission_percent, 10)}
+                      onChange={(e) => {
+                        const v = e.target.value.trim();
+                        setEditingRestaurant({
+                          ...editingRestaurant,
+                          commission_percent: v === '' ? undefined : (isNaN(Number(v)) ? 0 : parseFloat(v)),
+                        });
+                      }}
+                      className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white outline-none focus:border-amber-500 font-mono"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-slate-400 font-bold mb-1">نطاق التوصيل الأساسي (كم)</label>
+                    <input
+                      type="number"
+                      min="1"
+                      value={toInputNumber(editingRestaurant.max_delivery_radius_km, 15)}
+                      onChange={(e) => {
+                        const v = e.target.value.trim();
+                        setEditingRestaurant({
+                          ...editingRestaurant,
+                          max_delivery_radius_km: v === '' ? undefined : (isNaN(Number(v)) ? 15 : parseFloat(v)),
+                        });
+                      }}
+                      className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white outline-none focus:border-amber-500 font-mono"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-slate-400 font-bold mb-1">رسوم التوصيل الافتراضية (ج.م)</label>
+                    <input
+                      type="number"
+                      min="0"
+                      value={toInputNumber(editingRestaurant.delivery_fee, 15)}
+                      onChange={(e) => {
+                        const v = e.target.value.trim();
+                        setEditingRestaurant({
+                          ...editingRestaurant,
+                          delivery_fee: v === '' ? undefined : (isNaN(Number(v)) ? 0 : parseFloat(v)),
+                        });
+                      }}
+                      className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white outline-none focus:border-amber-500 font-mono"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-slate-400 font-bold mb-1">طريقة التسوية المالية (حسب قيد النظام المعتمد)</label>
+                  <select
+                    value={editingRestaurant.food_money_settlement_mode || 'cash_on_delivery'}
+                    onChange={(e) =>
+                      setEditingRestaurant({
+                        ...editingRestaurant,
+                        food_money_settlement_mode: e.target.value,
+                      })
+                    }
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white outline-none focus:border-amber-500 text-xs"
+                  >
+                    <option value="cash_on_delivery">تحصيل كاش عند التسليم (COD)</option>
+                    <option value="online_direct">دفع إلكتروني مباشر (Online Payment)</option>
+                    <option value="wallet">محفظة المطعم الرقمية (Digital Wallet)</option>
+                  </select>
                 </div>
               </div>
             </div>
 
-            <div className="pt-3 border-t border-slate-800 flex items-center justify-end gap-2">
+            <div className="pt-3.5 border-t border-slate-800 flex items-center justify-end gap-2.5">
               <button
                 type="button"
                 onClick={() => setIsRestaurantModalOpen(false)}
@@ -2164,29 +2982,95 @@ export const AdminRestaurantManagement: React.FC = () => {
                 type="button"
                 disabled={isSaving}
                 onClick={async () => {
-                  if (!editingRestaurant.name || !editingRestaurant.phone || !editingRestaurant.address) {
-                    showToast('يرجى ملء الحقول الإلزامية (الاسم، الهاتف، العنوان)', 'error');
+                  if (!hasPermission('restaurants.manage')) {
+                    showToast('ليس لديك صلاحية لتعديل أو إضافة المطاعم', 'error');
                     return;
                   }
+                  if (!editingRestaurant.name?.trim()) {
+                    showToast('يرجى إدخال اسم المطعم', 'error');
+                    return;
+                  }
+                  if (!editingRestaurant.phone?.trim()) {
+                    showToast('يرجى إدخال رقم هاتف المطعم', 'error');
+                    return;
+                  }
+                  if (!editingRestaurant.address?.trim() && !editingRestaurant.governorate_id) {
+                    showToast('يرجى تحديد عنوان المطعم أو اختيار المحافظة والمنطقة', 'error');
+                    return;
+                  }
+
+                  const latVal = editingRestaurant.latitude;
+                  const lngVal = editingRestaurant.longitude;
+                  if (
+                    latVal === undefined ||
+                    lngVal === undefined ||
+                    isNaN(Number(latVal)) ||
+                    isNaN(Number(lngVal))
+                  ) {
+                    showToast('يرجى تحديد إحداثيات الموقع (GPS) بشكل دقيق', 'error');
+                    return;
+                  }
+
+                  const latNum = Number(latVal);
+                  const lngNum = Number(lngVal);
+                  if (latNum < -90 || latNum > 90) {
+                    showToast('خط العرض يجب أن يكون بين -90 و 90 درجة', 'error');
+                    return;
+                  }
+                  if (lngNum < -180 || lngNum > 180) {
+                    showToast('خط الطول يجب أن يكون بين -180 و 180 درجة', 'error');
+                    return;
+                  }
+
+                  const commission = Number(editingRestaurant.commission_percent ?? 10);
+                  if (isNaN(commission) || commission < 0 || commission > 100) {
+                    showToast('نسبة العمولة يجب أن تكون بين 0% و 100%', 'error');
+                    return;
+                  }
+
+                  if (categories.length > 0 && (!editingRestaurant.category_ids || editingRestaurant.category_ids.length === 0)) {
+                    showToast('يرجى تحديد تصنيف واحد على الأقل للمطعم قبل الحفظ', 'error');
+                    return;
+                  }
+
+                  const safeMode =
+                    editingRestaurant.food_money_settlement_mode &&
+                    ['cash_on_delivery', 'online_direct', 'wallet'].includes(editingRestaurant.food_money_settlement_mode)
+                      ? editingRestaurant.food_money_settlement_mode
+                      : 'cash_on_delivery';
+
+                  const payloadToSave = {
+                    ...editingRestaurant,
+                    food_money_settlement_mode: safeMode,
+                  };
+
                   setIsSaving(true);
                   if (editingRestaurant.id) {
                     const res = await restaurantAdminService.updateRestaurant(
                       editingRestaurant.id,
-                      editingRestaurant
+                      payloadToSave
                     );
                     setIsSaving(false);
                     if (res.success) {
-                      showToast('تم تعديل المطعم بنجاح', 'success');
+                      if (res.isPartial && res.partialWarning) {
+                        showToast(res.partialWarning, 'warning');
+                      } else {
+                        showToast('تم تعديل المطعم بنجاح وحفظ بيانات العنوان', 'success');
+                      }
                       setIsRestaurantModalOpen(false);
                       loadRestaurants();
                     } else {
                       showToast(res.error || 'تعذر حفظ التعديلات', 'error');
                     }
                   } else {
-                    const res = await restaurantAdminService.createRestaurant(editingRestaurant as any);
+                    const res = await restaurantAdminService.createRestaurant(payloadToSave as any);
                     setIsSaving(false);
                     if (res.success) {
-                      showToast('تمت إضافة المطعم بنجاح', 'success');
+                      if (res.isPartial && res.partialWarning) {
+                        showToast(res.partialWarning, 'warning');
+                      } else {
+                        showToast('تمت إضافة المطعم بنجاح', 'success');
+                      }
                       setIsRestaurantModalOpen(false);
                       loadRestaurants();
                     } else {
@@ -2194,10 +3078,250 @@ export const AdminRestaurantManagement: React.FC = () => {
                     }
                   }
                 }}
-                className="px-5 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-bold flex items-center gap-1.5 cursor-pointer"
+                className="px-5 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-bold flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
               >
                 {isSaving ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
                 <span>حفظ المطعم</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* =====================================================================
+          INTERACTIVE MAP PIN PICKER MODAL (OpenStreetMap / Leaflet)
+          ===================================================================== */}
+      <RestaurantLocationPickerModal
+        isOpen={isMapPickerOpen}
+        initialLat={editingRestaurant?.latitude}
+        initialLng={editingRestaurant?.longitude}
+        restaurantName={editingRestaurant?.name}
+        onConfirm={(lat, lng) => {
+          setEditingRestaurant((prev) =>
+            prev ? { ...prev, latitude: lat, longitude: lng } : null
+          );
+          showToast(`تم تعيين إحداثيات الخريطة بنجاح: (${lat}, ${lng})`, 'success');
+        }}
+        onClose={() => setIsMapPickerOpen(false)}
+      />
+
+      {/* =====================================================================
+          RESTAURANT DELIVERY SERVICE AREAS & FEES MODAL
+          ===================================================================== */}
+      {isServiceAreasModalOpen && selectedRestaurantForAreas && (
+        <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-md flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-3xl max-w-2xl w-full max-h-[90vh] overflow-y-auto p-6 space-y-5 shadow-2xl">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3.5">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-xl bg-blue-500/10 border border-blue-500/30 flex items-center justify-center">
+                  <Truck className="w-4 h-4 text-blue-400" />
+                </div>
+                <div>
+                  <h3 className="text-base font-black text-white">
+                    مناطق ورسوم التوصيل: {selectedRestaurantForAreas.name}
+                  </h3>
+                  <p className="text-[11px] text-slate-400">
+                    تحديد المناطق والقرى التي يخدمها هذا المطعم وتعيين رسوم التوصيل الخاصة بكل منطقة
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setIsServiceAreasModalOpen(false)}
+                className="p-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-400 cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Quick Add Service Area Form */}
+            <div className="bg-slate-950/70 p-4 rounded-2xl border border-slate-800 space-y-3 text-xs">
+              <div className="font-bold text-slate-200 flex items-center gap-1.5">
+                <Plus className="w-3.5 h-3.5 text-blue-400" />
+                <span>إضافة منطقة جديدة لنطاق التوصيل</span>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                <div>
+                  <label className="block text-slate-400 font-bold mb-1">المحافظة</label>
+                  <select
+                    value={newServiceAreaForm.governorate_id}
+                    onChange={(e) => handleServiceAreaGovChange(e.target.value)}
+                    className="w-full bg-slate-900 border border-slate-800 rounded-xl px-2.5 py-1.5 text-white outline-none text-xs"
+                  >
+                    <option value="">اختر المحافظة</option>
+                    {governorates.map((g) => (
+                      <option key={g.id} value={g.id}>
+                        {g.name_ar}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-slate-400 font-bold mb-1">المركز / القسم</label>
+                  <select
+                    value={newServiceAreaForm.center_id}
+                    onChange={(e) => handleServiceAreaCenterChange(e.target.value)}
+                    disabled={!newServiceAreaForm.governorate_id || serviceAreaCenters.length === 0}
+                    className="w-full bg-slate-900 border border-slate-800 rounded-xl px-2.5 py-1.5 text-white outline-none text-xs disabled:opacity-50"
+                  >
+                    <option value="">اختر المركز</option>
+                    {serviceAreaCenters.map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.name_ar}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-slate-400 font-bold mb-1">المنطقة *</label>
+                  <select
+                    value={newServiceAreaForm.area_id}
+                    onChange={(e) => setNewServiceAreaForm({ ...newServiceAreaForm, area_id: e.target.value })}
+                    disabled={!newServiceAreaForm.center_id || serviceAreaAreas.length === 0}
+                    className="w-full bg-slate-900 border border-slate-800 rounded-xl px-2.5 py-1.5 text-white outline-none text-xs disabled:opacity-50"
+                  >
+                    <option value="">اختر المنطقة</option>
+                    {serviceAreaAreas.map((a) => (
+                      <option key={a.id} value={a.id}>
+                        {a.name_ar}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-1">
+                <div className="flex items-center gap-3">
+                  <div>
+                    <label className="block text-slate-400 font-bold mb-1">رسوم التوصيل لهذه المنطقة (ج.م) *</label>
+                    <input
+                      type="number"
+                      min="0"
+                      value={toInputNumber(newServiceAreaForm.delivery_fee, 15)}
+                      onChange={(e) => {
+                        const v = e.target.value.trim();
+                        setNewServiceAreaForm({
+                          ...newServiceAreaForm,
+                          delivery_fee: v === '' ? 0 : (isNaN(Number(v)) ? 0 : parseFloat(v)),
+                        });
+                      }}
+                      className="w-28 bg-slate-900 border border-slate-800 rounded-xl px-3 py-1.5 text-white outline-none font-mono text-xs"
+                    />
+                  </div>
+
+                  <label className="flex items-center gap-2 text-slate-300 font-medium cursor-pointer mt-4">
+                    <input
+                      type="checkbox"
+                      checked={newServiceAreaForm.is_active}
+                      onChange={(e) =>
+                        setNewServiceAreaForm({
+                          ...newServiceAreaForm,
+                          is_active: e.target.checked,
+                        })
+                      }
+                      className="rounded accent-blue-500 w-4 h-4 cursor-pointer"
+                    />
+                    <span>تفعيل التوصيل للمنطقة</span>
+                  </label>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={handleAddServiceArea}
+                  disabled={isSavingServiceArea || !newServiceAreaForm.area_id}
+                  className="px-4 py-2 rounded-xl bg-blue-500 hover:bg-blue-400 text-white font-bold text-xs flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50 transition"
+                >
+                  {isSavingServiceArea ? (
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                  ) : (
+                    <Plus className="w-3.5 h-3.5" />
+                  )}
+                  <span>إضافة / حفظ المنطقة</span>
+                </button>
+              </div>
+            </div>
+
+            {/* List of Configured Service Areas */}
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <h4 className="text-xs font-bold text-slate-300">
+                  المناطق المشمولة بالتوصيل ({restaurantServiceAreas.length}):
+                </h4>
+                {isLoadingServiceAreas && (
+                  <RefreshCw className="w-3.5 h-3.5 animate-spin text-blue-400" />
+                )}
+              </div>
+
+              {isLoadingServiceAreas ? (
+                <div className="p-8 text-center text-slate-400 text-xs flex flex-col items-center gap-2">
+                  <RefreshCw className="w-5 h-5 animate-spin text-blue-400" />
+                  <span>جاري تحميل مناطق التوصيل...</span>
+                </div>
+              ) : restaurantServiceAreas.length === 0 ? (
+                <div className="p-8 text-center bg-slate-950/40 rounded-2xl border border-slate-800 text-xs text-slate-400 space-y-1">
+                  <Truck className="w-8 h-8 text-slate-600 mx-auto mb-2" />
+                  <div className="font-bold text-slate-300">لا توجد مناطق توصيل مخصصة حتى الآن</div>
+                  <div className="text-[11px] text-slate-500">
+                    أضف مناطق وقرى من النموذج أعلاه لربطها مباشرة بقاعدة بيانات التوصيل.
+                  </div>
+                </div>
+              ) : (
+                <div className="space-y-2 max-h-64 overflow-y-auto">
+                  {restaurantServiceAreas.map((sa) => (
+                    <div
+                      key={sa.id}
+                      className="p-3 rounded-xl bg-slate-950/80 border border-slate-800 flex items-center justify-between gap-3 text-xs"
+                    >
+                      <div className="flex items-center gap-2">
+                        <MapPin className="w-4 h-4 text-blue-400 shrink-0" />
+                        <div>
+                          <div className="font-bold text-white">
+                            {[sa.governorate_name_ar, sa.center_name_ar, sa.area_name_ar]
+                              .filter(Boolean)
+                              .join(' › ')}
+                          </div>
+                          <div className="text-[11px] text-slate-400">
+                            رسوم التوصيل: <span className="font-mono text-emerald-400 font-bold">{formatCurrency(sa.delivery_fee)}</span>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-2 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => handleToggleServiceAreaActive(sa)}
+                          className={`px-2 py-1 rounded-lg text-[10px] font-bold border cursor-pointer transition ${
+                            sa.is_active
+                              ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30'
+                              : 'bg-rose-500/15 text-rose-300 border-rose-500/30'
+                          }`}
+                        >
+                          {sa.is_active ? 'نشط' : 'معطل'}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteServiceArea(sa)}
+                          className="p-1 rounded-lg hover:bg-rose-500/20 text-slate-500 hover:text-rose-400 cursor-pointer transition"
+                          title="إزالة المنطقة من نطاق التوصيل"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="pt-3 border-t border-slate-800 flex justify-end">
+              <button
+                type="button"
+                onClick={() => setIsServiceAreasModalOpen(false)}
+                className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-bold cursor-pointer"
+              >
+                إغلاق
               </button>
             </div>
           </div>
@@ -2249,8 +3373,11 @@ export const AdminRestaurantManagement: React.FC = () => {
                 <label className="block text-slate-300 font-bold mb-1">الترتيب</label>
                 <input
                   type="number"
-                  value={editingCategory.sort_order ?? 1}
-                  onChange={(e) => setEditingCategory({ ...editingCategory, sort_order: parseInt(e.target.value) || 0 })}
+                  value={toInputNumber(editingCategory?.sort_order, 1)}
+                  onChange={(e) => {
+                    const v = e.target.value.trim();
+                    setEditingCategory({ ...editingCategory, sort_order: v === '' ? 1 : (parseInt(v) || 0) });
+                  }}
                   className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white outline-none"
                 />
               </div>
@@ -2268,6 +3395,10 @@ export const AdminRestaurantManagement: React.FC = () => {
                 type="button"
                 disabled={isSaving}
                 onClick={async () => {
+                  if (!hasPermission('restaurants.manage')) {
+                    showToast('ليس لديك صلاحية لإدارة التصنيفات', 'error');
+                    return;
+                  }
                   if (!editingCategory.name?.trim()) {
                     showToast('اسم التصنيف مطلوب', 'error');
                     return;
@@ -2354,8 +3485,11 @@ export const AdminRestaurantManagement: React.FC = () => {
                 <label className="block text-slate-300 font-bold mb-1">ترتيب العرض</label>
                 <input
                   type="number"
-                  value={editingMenuCategory.sort_order ?? 1}
-                  onChange={(e) => setEditingMenuCategory({ ...editingMenuCategory, sort_order: parseInt(e.target.value) || 0 })}
+                  value={toInputNumber(editingMenuCategory?.sort_order, 1)}
+                  onChange={(e) => {
+                    const v = e.target.value.trim();
+                    setEditingMenuCategory({ ...editingMenuCategory, sort_order: v === '' ? 1 : (parseInt(v) || 0) });
+                  }}
                   className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white outline-none"
                 />
               </div>
@@ -2373,6 +3507,10 @@ export const AdminRestaurantManagement: React.FC = () => {
                 type="button"
                 disabled={isSaving}
                 onClick={async () => {
+                  if (!hasPermission('restaurants.manage')) {
+                    showToast('ليس لديك صلاحية لإدارة أقسام القائمة', 'error');
+                    return;
+                  }
                   if (!editingMenuCategory.name?.trim() || !editingMenuCategory.restaurant_id) {
                     showToast('المطعم واسم القسم مطلوبان', 'error');
                     return;
@@ -2484,26 +3622,29 @@ export const AdminRestaurantManagement: React.FC = () => {
                 />
               </div>
 
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-slate-300 font-bold mb-1">السعر (ج.م) *</label>
-                  <input
-                    type="number"
-                    value={editingMenuItem.price ?? 50}
-                    onChange={(e) => setEditingMenuItem({ ...editingMenuItem, price: parseFloat(e.target.value) || 0 })}
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white outline-none font-mono"
-                  />
-                </div>
-                <div>
-                  <label className="block text-slate-300 font-bold mb-1">رابط صورة الصنف</label>
-                  <input
-                    type="text"
-                    value={editingMenuItem.image_url || ''}
-                    onChange={(e) => setEditingMenuItem({ ...editingMenuItem, image_url: e.target.value })}
-                    placeholder="https://..."
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white outline-none"
-                  />
-                </div>
+              <div>
+                <label className="block text-slate-300 font-bold mb-1">السعر (ج.م) *</label>
+                <input
+                  type="number"
+                  value={toInputNumber(editingMenuItem?.price, 50)}
+                  onChange={(e) => {
+                    const v = e.target.value.trim();
+                    setEditingMenuItem({ ...editingMenuItem, price: v === '' ? 0 : (parseFloat(v) || 0) });
+                  }}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white outline-none font-mono"
+                />
+              </div>
+
+              <div>
+                <RestaurantImageUploader
+                  label="صورة الصنف / المنتج"
+                  value={editingMenuItem.image_url}
+                  restaurantId={editingMenuItem.restaurant_id || null}
+                  targetType="menu_item"
+                  targetId={editingMenuItem.id}
+                  onChange={(newPath) => setEditingMenuItem({ ...editingMenuItem, image_url: newPath })}
+                  helpText="الصورة تُربط بمعرّف المطعم وتُخزن في حاوية الكتالوج restaurant-product-images ثم يُحفظ مسارها في سجل الصنف."
+                />
               </div>
 
               <div className="flex items-center gap-4 pt-1">
@@ -2531,6 +3672,10 @@ export const AdminRestaurantManagement: React.FC = () => {
                 type="button"
                 disabled={isSaving}
                 onClick={async () => {
+                  if (!hasPermission('restaurants.manage')) {
+                    showToast('ليس لديك صلاحية لإدارة أصناف الطعام', 'error');
+                    return;
+                  }
                   if (!editingMenuItem.name?.trim() || !editingMenuItem.restaurant_id || !editingMenuItem.category_id) {
                     showToast('المطعم، القسم، واسم الصنف مطلوبين', 'error');
                     return;
@@ -2555,6 +3700,337 @@ export const AdminRestaurantManagement: React.FC = () => {
                       loadMenu();
                     } else {
                       showToast(res.error || 'تعذر إضافة الصنف', 'error');
+                    }
+                  }
+                }}
+                className="px-5 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-bold cursor-pointer"
+              >
+                حفظ
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* =====================================================================
+          ADD / EDIT OPTION GROUP MODAL
+          ===================================================================== */}
+      {isOptionModalOpen && editingOption && (
+        <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-md flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-3xl max-w-md w-full p-6 space-y-4 shadow-2xl">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+              <h3 className="text-base font-black text-white">
+                {editingOption.id ? 'تعديل مجموعة الاختيارات' : 'إضافة مجموعة اختيارات جديدة'}
+              </h3>
+              <button
+                onClick={() => setIsOptionModalOpen(false)}
+                className="p-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-400 cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="space-y-3 text-xs">
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-slate-300 font-bold mb-1">المطعم *</label>
+                  <select
+                    value={editingOption.restaurant_id || ''}
+                    onChange={(e) => setEditingOption({ ...editingOption, restaurant_id: e.target.value })}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white outline-none"
+                  >
+                    <option value="">— اختر المطعم —</option>
+                    {restaurants.map((r) => (
+                      <option key={r.id} value={r.id}>
+                        {r.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-slate-300 font-bold mb-1">الصنف المرتبط *</label>
+                  <select
+                    value={editingOption.menu_item_id || ''}
+                    onChange={(e) => setEditingOption({ ...editingOption, menu_item_id: e.target.value })}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white outline-none"
+                  >
+                    <option value="">— اختر الصنف —</option>
+                    {menuItems
+                      .filter((mi) => !editingOption.restaurant_id || mi.restaurant_id === editingOption.restaurant_id)
+                      .map((mi) => (
+                        <option key={mi.id} value={mi.id}>
+                          {mi.name}
+                        </option>
+                      ))}
+                  </select>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-slate-300 font-bold mb-1">اسم المجموعة *</label>
+                <input
+                  type="text"
+                  value={editingOption.name || ''}
+                  onChange={(e) => setEditingOption({ ...editingOption, name: e.target.value })}
+                  placeholder="مثال: الحجم، نوع الخبز، إضافات الجبنة..."
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white outline-none"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-slate-300 font-bold mb-1">الحد الأدنى للاختيار</label>
+                  <input
+                    type="number"
+                    min="0"
+                    value={toInputNumber(editingOption?.min_select, 0)}
+                    onChange={(e) => {
+                      const v = e.target.value.trim();
+                      setEditingOption({ ...editingOption, min_select: v === '' ? 0 : (parseInt(v) || 0) });
+                    }}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white outline-none font-mono"
+                  />
+                </div>
+                <div>
+                  <label className="block text-slate-300 font-bold mb-1">الحد الأقصى للاختيار</label>
+                  <input
+                    type="number"
+                    min="1"
+                    value={toInputNumber(editingOption?.max_select, 1)}
+                    onChange={(e) => {
+                      const v = e.target.value.trim();
+                      setEditingOption({ ...editingOption, max_select: v === '' ? 1 : (parseInt(v) || 1) });
+                    }}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white outline-none font-mono"
+                  />
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2 pt-1">
+                <input
+                  type="checkbox"
+                  id="opt_required"
+                  checked={editingOption.required ?? false}
+                  onChange={(e) => setEditingOption({ ...editingOption, required: e.target.checked })}
+                  className="w-4 h-4 rounded text-amber-500"
+                />
+                <label htmlFor="opt_required" className="text-slate-300 font-bold cursor-pointer">
+                  مجموعة اختيار إجبارية على العميل
+                </label>
+              </div>
+            </div>
+
+            <div className="pt-3 border-t border-slate-800 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setIsOptionModalOpen(false)}
+                className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-bold cursor-pointer"
+              >
+                إلغاء
+              </button>
+              <button
+                type="button"
+                disabled={isSaving}
+                onClick={async () => {
+                  if (!hasPermission('restaurants.manage')) {
+                    showToast('ليس لديك صلاحية لإدارة مجموعات الاختيار', 'error');
+                    return;
+                  }
+                  if (!editingOption.name?.trim() || !editingOption.restaurant_id || !editingOption.menu_item_id) {
+                    showToast('المطعم، الصنف واسم المجموعة مطلوبين', 'error');
+                    return;
+                  }
+                  const minS = Number(editingOption.min_select ?? 0);
+                  const maxS = Number(editingOption.max_select ?? 1);
+                  if (minS < 0 || maxS < 1 || minS > maxS) {
+                    showToast('الحد الأدنى لا يمكن أن يتجاوز الحد الأقصى', 'error');
+                    return;
+                  }
+                  setIsSaving(true);
+                  if (editingOption.id) {
+                    const res = await restaurantAdminService.updateItemOption(editingOption.id, editingOption);
+                    setIsSaving(false);
+                    if (res.success) {
+                      showToast('تم تعديل مجموعة الاختيار بنجاح', 'success');
+                      setIsOptionModalOpen(false);
+                      loadOptions();
+                    } else {
+                      showToast(res.error || 'تعذر تعديل المجموعة', 'error');
+                    }
+                  } else {
+                    const res = await restaurantAdminService.createItemOption(editingOption as any);
+                    setIsSaving(false);
+                    if (res.success) {
+                      showToast('تمت إضافة مجموعة الاختيار بنجاح', 'success');
+                      setIsOptionModalOpen(false);
+                      loadOptions();
+                    } else {
+                      showToast(res.error || 'تعذر إضافة المجموعة', 'error');
+                    }
+                  }
+                }}
+                className="px-5 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-bold cursor-pointer"
+              >
+                حفظ
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* =====================================================================
+          ADD / EDIT OFFER MODAL
+          ===================================================================== */}
+      {isOfferModalOpen && editingOffer && (
+        <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-md flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-3xl max-w-md w-full p-6 space-y-4 shadow-2xl">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+              <h3 className="text-base font-black text-white">
+                {editingOffer.id ? 'تعديل العرض الترويجي' : 'إضافة عرض ترويجي جديد'}
+              </h3>
+              <button
+                onClick={() => setIsOfferModalOpen(false)}
+                className="p-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-400 cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="space-y-3 text-xs">
+              <div>
+                <label className="block text-slate-300 font-bold mb-1">المطعم *</label>
+                <select
+                  value={editingOffer.restaurant_id || ''}
+                  onChange={(e) => setEditingOffer({ ...editingOffer, restaurant_id: e.target.value })}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white outline-none"
+                >
+                  <option value="">— اختر المطعم —</option>
+                  {restaurants.map((r) => (
+                    <option key={r.id} value={r.id}>
+                      {r.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-slate-300 font-bold mb-1">عنوان العرض *</label>
+                <input
+                  type="text"
+                  value={editingOffer.title || ''}
+                  onChange={(e) => setEditingOffer({ ...editingOffer, title: e.target.value })}
+                  placeholder="مثال: خصم 20% على المشويات"
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white outline-none"
+                />
+              </div>
+
+              <div>
+                <label className="block text-slate-300 font-bold mb-1">الوصف</label>
+                <textarea
+                  value={editingOffer.description || ''}
+                  onChange={(e) => setEditingOffer({ ...editingOffer, description: e.target.value })}
+                  placeholder="تفاصيل وشروط العرض..."
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white outline-none h-16"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-slate-300 font-bold mb-1">نوع الخصم</label>
+                  <select
+                    value={editingOffer.discount_type || 'percentage'}
+                    onChange={(e) => setEditingOffer({ ...editingOffer, discount_type: e.target.value as any })}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white outline-none"
+                  >
+                    <option value="percentage">نسبة مئوية (%)</option>
+                    <option value="fixed">مبلغ ثابت (ج.م)</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-slate-300 font-bold mb-1">قيمة الخصم *</label>
+                  <input
+                    type="number"
+                    value={toInputNumber(editingOffer.discount_value, 10)}
+                    onChange={(e) => {
+                      const v = e.target.value.trim();
+                      setEditingOffer({ ...editingOffer, discount_value: v === '' ? 0 : (parseFloat(v) || 0) });
+                    }}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white outline-none font-mono"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-slate-300 font-bold mb-1">تاريخ البدء *</label>
+                  <input
+                    type="date"
+                    value={editingOffer.starts_at?.slice(0, 10) || ''}
+                    onChange={(e) => setEditingOffer({ ...editingOffer, starts_at: new Date(e.target.value).toISOString() })}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="block text-slate-300 font-bold mb-1">تاريخ الانتهاء *</label>
+                  <input
+                    type="date"
+                    value={editingOffer.ends_at?.slice(0, 10) || ''}
+                    onChange={(e) => setEditingOffer({ ...editingOffer, ends_at: new Date(e.target.value).toISOString() })}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white outline-none"
+                  />
+                </div>
+              </div>
+            </div>
+
+            <div className="pt-3 border-t border-slate-800 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setIsOfferModalOpen(false)}
+                className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-bold cursor-pointer"
+              >
+                إلغاء
+              </button>
+              <button
+                type="button"
+                disabled={isSaving}
+                onClick={async () => {
+                  if (!hasPermission('restaurants.manage')) {
+                    showToast('ليس لديك صلاحية لإدارة العروض', 'error');
+                    return;
+                  }
+                  if (!editingOffer.title?.trim() || !editingOffer.restaurant_id) {
+                    showToast('المطعم وعنوان العرض مطلوبان', 'error');
+                    return;
+                  }
+                  const discVal = Number(editingOffer.discount_value ?? 0);
+                  if (discVal <= 0) {
+                    showToast('قيمة الخصم يجب أن تكون أكبر من صفر', 'error');
+                    return;
+                  }
+                  if (editingOffer.discount_type === 'percentage' && discVal > 100) {
+                    showToast('نسبة الخصم لا يمكن أن تتجاوز 100%', 'error');
+                    return;
+                  }
+                  setIsSaving(true);
+                  if (editingOffer.id) {
+                    const res = await restaurantAdminService.updateOffer(editingOffer.id, editingOffer);
+                    setIsSaving(false);
+                    if (res.success) {
+                      showToast('تم تعديل العرض بنجاح', 'success');
+                      setIsOfferModalOpen(false);
+                      loadOffers();
+                    } else {
+                      showToast(res.error || 'تعذر حفظ العرض', 'error');
+                    }
+                  } else {
+                    const res = await restaurantAdminService.createOffer(editingOffer as any);
+                    setIsSaving(false);
+                    if (res.success) {
+                      showToast('تمت إضافة العرض بنجاح', 'success');
+                      setIsOfferModalOpen(false);
+                      loadOffers();
+                    } else {
+                      showToast(res.error || 'تعذر إضافة العرض', 'error');
                     }
                   }
                 }}
@@ -2615,6 +4091,10 @@ export const AdminRestaurantManagement: React.FC = () => {
                 type="button"
                 disabled={isSaving}
                 onClick={async () => {
+                  if (!hasPermission('restaurants.manage')) {
+                    showToast('ليس لديك صلاحية لتوثيق حل الشكاوى', 'error');
+                    return;
+                  }
                   if (!complaintResolutionNote.trim()) {
                     showToast('ملاحظة حل الشكوى مطلوبة', 'error');
                     return;
@@ -2630,7 +4110,6 @@ export const AdminRestaurantManagement: React.FC = () => {
                     showToast('تم توثيق حل الشكوى بنجاح', 'success');
                     setResolvingComplaint(null);
                     loadComplaints();
-                  } else {
                     showToast(res.error || 'تعذر توثيق الحل', 'error');
                   }
                 }}

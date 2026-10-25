@@ -15,6 +15,7 @@ import {
   PackageCheck,
   HeartPulse,
   Bike,
+  UtensilsCrossed,
   Search,
   Bell,
 } from 'lucide-react';
@@ -577,7 +578,7 @@ export const AdminLayout: React.FC<AdminLayoutProps> = ({ children }) => {
         <button
           type="button"
           onClick={() => navigateToSection('overview')}
-          className={`relative flex flex-col items-center justify-center py-1 px-2.5 rounded-xl transition-colors min-w-[60px] cursor-pointer ${
+          className={`relative flex flex-col items-center justify-center py-1 px-1 sm:px-2 rounded-xl transition-colors min-w-[48px] sm:min-w-[56px] cursor-pointer ${
             activeSection === 'overview'
               ? 'text-emerald-400 font-black'
               : 'text-slate-400 hover:text-slate-200 font-semibold'
@@ -586,7 +587,7 @@ export const AdminLayout: React.FC<AdminLayoutProps> = ({ children }) => {
           <LayoutDashboard className="w-5 h-5" />
           <span className="text-[10px] mt-1">المهام</span>
           {sectionBadges['overview'] && sectionBadges['overview'].count > 0 && (
-            <span className="absolute top-0.5 right-2 min-w-[16px] h-4 px-1 rounded-full bg-amber-500 text-slate-950 text-[9px] font-black font-mono flex items-center justify-center">
+            <span className="absolute top-0.5 right-1 min-w-[16px] h-4 px-1 rounded-full bg-amber-500 text-slate-950 text-[9px] font-black font-mono flex items-center justify-center">
               {sectionBadges['overview'].count}
             </span>
           )}
@@ -596,7 +597,7 @@ export const AdminLayout: React.FC<AdminLayoutProps> = ({ children }) => {
           <button
             type="button"
             onClick={() => navigateToSection('delivery_orders')}
-            className={`relative flex flex-col items-center justify-center py-1 px-2.5 rounded-xl transition-colors min-w-[60px] cursor-pointer ${
+            className={`relative flex flex-col items-center justify-center py-1 px-1 sm:px-2 rounded-xl transition-colors min-w-[48px] sm:min-w-[56px] cursor-pointer ${
               activeSection === 'delivery_orders'
                 ? 'text-emerald-400 font-black'
                 : 'text-slate-400 hover:text-slate-200 font-semibold'
@@ -605,7 +606,7 @@ export const AdminLayout: React.FC<AdminLayoutProps> = ({ children }) => {
             <PackageCheck className="w-5 h-5" />
             <span className="text-[10px] mt-1">الدليفري</span>
             {sectionBadges['delivery_orders'] && sectionBadges['delivery_orders'].count > 0 && (
-              <span className="absolute top-0.5 right-2 min-w-[16px] h-4 px-1 rounded-full bg-amber-500 text-slate-950 text-[9px] font-black font-mono flex items-center justify-center">
+              <span className="absolute top-0.5 right-1 min-w-[16px] h-4 px-1 rounded-full bg-amber-500 text-slate-950 text-[9px] font-black font-mono flex items-center justify-center">
                 {sectionBadges['delivery_orders'].count}
               </span>
             )}
@@ -616,7 +617,7 @@ export const AdminLayout: React.FC<AdminLayoutProps> = ({ children }) => {
           <button
             type="button"
             onClick={() => navigateToSection('pharmacy_orders')}
-            className={`relative flex flex-col items-center justify-center py-1 px-2.5 rounded-xl transition-colors min-w-[60px] cursor-pointer ${
+            className={`relative flex flex-col items-center justify-center py-1 px-1 sm:px-2 rounded-xl transition-colors min-w-[48px] sm:min-w-[56px] cursor-pointer ${
               activeSection.startsWith('pharmacy_')
                 ? 'text-emerald-400 font-black'
                 : 'text-slate-400 hover:text-slate-200 font-semibold'
@@ -625,8 +626,28 @@ export const AdminLayout: React.FC<AdminLayoutProps> = ({ children }) => {
             <HeartPulse className="w-5 h-5" />
             <span className="text-[10px] mt-1">الصيدلية</span>
             {sectionBadges['pharmacy_orders'] && sectionBadges['pharmacy_orders'].count > 0 && (
-              <span className="absolute top-0.5 right-2 min-w-[16px] h-4 px-1 rounded-full bg-amber-500 text-slate-950 text-[9px] font-black font-mono flex items-center justify-center">
+              <span className="absolute top-0.5 right-1 min-w-[16px] h-4 px-1 rounded-full bg-amber-500 text-slate-950 text-[9px] font-black font-mono flex items-center justify-center">
                 {sectionBadges['pharmacy_orders'].count}
+              </span>
+            )}
+          </button>
+        )}
+
+        {hasPermission('restaurants.view') && (
+          <button
+            type="button"
+            onClick={() => navigateToSection('restaurant_overview')}
+            className={`relative flex flex-col items-center justify-center py-1 px-1 sm:px-2 rounded-xl transition-colors min-w-[48px] sm:min-w-[56px] cursor-pointer ${
+              activeSection.startsWith('restaurant_')
+                ? 'text-emerald-400 font-black'
+                : 'text-slate-400 hover:text-slate-200 font-semibold'
+            }`}
+          >
+            <UtensilsCrossed className="w-5 h-5" />
+            <span className="text-[10px] mt-1">المطاعم</span>
+            {sectionBadges['restaurant_overview'] && sectionBadges['restaurant_overview'].count > 0 && (
+              <span className="absolute top-0.5 right-1 min-w-[16px] h-4 px-1 rounded-full bg-amber-500 text-slate-950 text-[9px] font-black font-mono flex items-center justify-center">
+                {sectionBadges['restaurant_overview'].count}
               </span>
             )}
           </button>
@@ -636,7 +657,7 @@ export const AdminLayout: React.FC<AdminLayoutProps> = ({ children }) => {
           <button
             type="button"
             onClick={() => navigateToSection('delivery_drivers')}
-            className={`relative flex flex-col items-center justify-center py-1 px-2.5 rounded-xl transition-colors min-w-[60px] cursor-pointer ${
+            className={`relative flex flex-col items-center justify-center py-1 px-1 sm:px-2 rounded-xl transition-colors min-w-[48px] sm:min-w-[56px] cursor-pointer ${
               activeSection === 'delivery_drivers'
                 ? 'text-emerald-400 font-black'
                 : 'text-slate-400 hover:text-slate-200 font-semibold'
@@ -645,7 +666,7 @@ export const AdminLayout: React.FC<AdminLayoutProps> = ({ children }) => {
             <Bike className="w-5 h-5" />
             <span className="text-[10px] mt-1">السائقون</span>
             {sectionBadges['delivery_drivers'] && sectionBadges['delivery_drivers'].count > 0 && (
-              <span className="absolute top-0.5 right-2 min-w-[16px] h-4 px-1 rounded-full bg-sky-500 text-slate-950 text-[9px] font-black font-mono flex items-center justify-center">
+              <span className="absolute top-0.5 right-1 min-w-[16px] h-4 px-1 rounded-full bg-sky-500 text-slate-950 text-[9px] font-black font-mono flex items-center justify-center">
                 {sectionBadges['delivery_drivers'].count}
               </span>
             )}
@@ -655,7 +676,7 @@ export const AdminLayout: React.FC<AdminLayoutProps> = ({ children }) => {
         <button
           type="button"
           onClick={() => setIsMobileMenuOpen(true)}
-          className={`flex flex-col items-center justify-center py-1 px-2.5 rounded-xl transition-colors min-w-[60px] cursor-pointer ${
+          className={`flex flex-col items-center justify-center py-1 px-1 sm:px-2 rounded-xl transition-colors min-w-[48px] sm:min-w-[56px] cursor-pointer ${
             isMobileMenuOpen
               ? 'text-emerald-400 font-black'
               : 'text-slate-400 hover:text-slate-200 font-semibold'

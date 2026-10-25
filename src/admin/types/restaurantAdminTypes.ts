@@ -12,7 +12,7 @@ export interface RestaurantSectionSettings {
   updated_at: string;
 }
 
-export type FoodMoneySettlementMode = 'online_direct' | 'cash_on_delivery' | 'periodic_settlement' | 'wallet';
+export type FoodMoneySettlementMode = 'cash_on_delivery' | 'online_direct' | 'wallet';
 
 export interface Restaurant {
   id: string;
@@ -32,10 +32,83 @@ export interface Restaurant {
   food_money_settlement_mode: string;
   created_at: string;
   updated_at: string;
+  // Egyptian administrative address columns (public.restaurants)
+  country_name?: string | null;
+  governorate_id?: string | null;
+  center_id?: string | null;
+  area_id?: string | null;
+  street?: string | null;
+  detailed_address?: string | null;
+  // Enriched display helper names
+  governorate_name?: string | null;
+  center_name?: string | null;
+  area_name?: string | null;
   // Joined/aggregated helper fields
   categories?: RestaurantCategory[];
   items_count?: number;
   orders_count?: number;
+}
+
+export interface FoodGovernorate {
+  id: string;
+  country_name?: string;
+  name_ar: string;
+  name_en?: string | null;
+  code?: string | null;
+  is_active: boolean;
+  sort_order?: number;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface FoodCenter {
+  id: string;
+  governorate_id: string;
+  name_ar: string;
+  name_en?: string | null;
+  is_active: boolean;
+  sort_order?: number;
+  source_code?: string | null;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface FoodArea {
+  id: string;
+  governorate_id: string;
+  center_id: string;
+  name_ar: string;
+  name_en?: string | null;
+  is_active: boolean;
+  sort_order?: number;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface RestaurantServiceArea {
+  id: string;
+  restaurant_id: string;
+  governorate_id?: string | null;
+  center_id?: string | null;
+  area_id: string;
+  is_active: boolean;
+  created_at?: string;
+  updated_at?: string;
+  // Joined / enriched display fields
+  delivery_fee?: number;
+  governorate_name_ar?: string;
+  center_name_ar?: string;
+  area_name_ar?: string;
+}
+
+export interface RestaurantAreaDeliveryFee {
+  id: string;
+  restaurant_id: string;
+  area_id: string;
+  delivery_fee: number;
+  is_active: boolean;
+  created_at?: string;
+  updated_at?: string;
 }
 
 export interface RestaurantCategory {
@@ -148,6 +221,10 @@ export interface RestaurantOrder {
   restaurant_confirmation_method: string | null;
   cancellation_reason: string | null;
   idempotency_key: string | null;
+  delivery_area_id?: string | null;
+  delivery_governorate_name_snapshot?: string | null;
+  delivery_center_name_snapshot?: string | null;
+  delivery_area_name_snapshot?: string | null;
   created_at: string;
   updated_at: string;
   // Joined helper fields

@@ -30,6 +30,11 @@ import {
   RestaurantComplaint,
   RestaurantOwnershipHistory,
   RestaurantOverviewStats,
+  FoodGovernorate,
+  FoodCenter,
+  FoodArea,
+  RestaurantServiceArea,
+  RestaurantAreaDeliveryFee,
 } from '../types/restaurantAdminTypes';
 
 export const restaurantAdminService = {
@@ -121,7 +126,7 @@ export const restaurantAdminService = {
       let query = supabase
         .from('restaurants')
         .select(
-          'id, owner_user_id, name, description, phone, address, latitude, longitude, image_url, is_active, is_open, max_delivery_radius_km, commission_percent, delivery_fee, food_money_settlement_mode, created_at, updated_at'
+          'id, owner_user_id, name, description, phone, address, latitude, longitude, image_url, is_active, is_open, max_delivery_radius_km, commission_percent, delivery_fee, food_money_settlement_mode, country_name, governorate_id, center_id, area_id, street, detailed_address, created_at, updated_at'
         )
         .order('created_at', { ascending: false });
 
@@ -134,7 +139,7 @@ export const restaurantAdminService = {
       if (filters?.search && filters.search.trim()) {
         const q = filters.search.trim().replace(/[%_]/g, '');
         if (q) {
-          query = query.or(`name.ilike.%${q}%,phone.ilike.%${q}%,address.ilike.%${q}%`);
+          query = query.or(`name.ilike.%${q}%,phone.ilike.%${q}%,address.ilike.%${q}%,street.ilike.%${q}%,detailed_address.ilike.%${q}%`);
         }
       }
 
@@ -145,10 +150,14 @@ export const restaurantAdminService = {
 
       const restaurants = (rows || []) as Restaurant[];
 
-      // Load category links & categories
+      // Load category links, categories & Egyptian address names
       if (restaurants.length > 0) {
         const restaurantIds = restaurants.map((r) => r.id);
-        const [linksRes, categoriesRes, itemsCountRes] = await Promise.all([
+        const govIds = Array.from(new Set(restaurants.map((r) => r.governorate_id).filter((g): g is string => Boolean(g))));
+        const centerIds = Array.from(new Set(restaurants.map((r) => r.center_id).filter((c): c is string => Boolean(c))));
+        const areaIds = Array.from(new Set(restaurants.map((r) => r.area_id).filter((a): a is string => Boolean(a))));
+
+        const [linksRes, categoriesRes, itemsCountRes, govsRes, centersRes, areasRes] = await Promise.all([
           supabase
             .from('restaurant_category_links')
             .select('restaurant_id, category_id')
@@ -159,6 +168,15 @@ export const restaurantAdminService = {
           supabase
             .from('restaurant_menu_items')
             .select('id, restaurant_id'),
+          govIds.length > 0
+            ? supabase.from('food_governorates').select('id, name_ar').in('id', govIds)
+            : Promise.resolve({ data: [] }),
+          centerIds.length > 0
+            ? supabase.from('food_centers').select('id, name_ar').in('id', centerIds)
+            : Promise.resolve({ data: [] }),
+          areaIds.length > 0
+            ? supabase.from('food_areas').select('id, name_ar').in('id', areaIds)
+            : Promise.resolve({ data: [] }),
         ]);
 
         const categoriesMap = new Map<string, RestaurantCategory>();
@@ -176,12 +194,24 @@ export const restaurantAdminService = {
           itemsCountMap.set(item.restaurant_id, (itemsCountMap.get(item.restaurant_id) || 0) + 1);
         });
 
+        const govMap = new Map<string, string>();
+        (govsRes.data || []).forEach((g: any) => govMap.set(g.id, g.name_ar));
+
+        const centerMap = new Map<string, string>();
+        (centersRes.data || []).forEach((c: any) => centerMap.set(c.id, c.name_ar));
+
+        const areaMap = new Map<string, string>();
+        (areasRes.data || []).forEach((a: any) => areaMap.set(a.id, a.name_ar));
+
         restaurants.forEach((r) => {
           const catIds = linksMap.get(r.id) || [];
           r.categories = catIds
             .map((cid) => categoriesMap.get(cid))
             .filter((c): c is RestaurantCategory => Boolean(c));
           r.items_count = itemsCountMap.get(r.id) || 0;
+          r.governorate_name = r.governorate_id ? govMap.get(r.governorate_id) || null : null;
+          r.center_name = r.center_id ? centerMap.get(r.center_id) || null : null;
+          r.area_name = r.area_id ? areaMap.get(r.area_id) || null : null;
         });
 
         // Filter by category if requested
@@ -204,7 +234,7 @@ export const restaurantAdminService = {
     name: string;
     description?: string | null;
     phone: string;
-    address: string;
+    address?: string;
     latitude: number;
     longitude: number;
     image_url?: string | null;
@@ -216,7 +246,19 @@ export const restaurantAdminService = {
     food_money_settlement_mode?: string;
     owner_user_id?: string | null;
     category_ids?: string[];
-  }): Promise<{ success: boolean; restaurant?: Restaurant; error?: string }> {
+    country_name?: string | null;
+    governorate_id?: string | null;
+    center_id?: string | null;
+    area_id?: string | null;
+    street?: string | null;
+    detailed_address?: string | null;
+  }): Promise<{
+    success: boolean;
+    restaurant?: Restaurant;
+    isPartial?: boolean;
+    partialWarning?: string;
+    error?: string;
+  }> {
     if (!supabase || !isSupabaseConfigured) {
       return { success: false, error: 'Supabase غير متصل' };
     }
@@ -226,16 +268,43 @@ export const restaurantAdminService = {
     if (!data.phone?.trim()) {
       return { success: false, error: 'رقم هاتف المطعم مطلوب' };
     }
-    if (!data.address?.trim()) {
+
+    const finalAddress = data.address?.trim() || [data.detailed_address, data.street].filter(Boolean).join(' - ') || 'مصر';
+    if (!finalAddress) {
       return { success: false, error: 'عنوان المطعم مطلوب' };
     }
+
+    const lat = Number(data.latitude);
+    const lng = Number(data.longitude);
     if (
       data.latitude === undefined ||
       data.longitude === undefined ||
-      isNaN(Number(data.latitude)) ||
-      isNaN(Number(data.longitude))
+      isNaN(lat) ||
+      isNaN(lng) ||
+      lat < -90 ||
+      lat > 90 ||
+      lng < -180 ||
+      lng > 180
     ) {
-      return { success: false, error: 'إحداثيات الموقع (خط العرض وخط الطول) مطلوبة وصحيحة' };
+      return {
+        success: false,
+        error: 'إحداثيات الموقع غير صالحة. خط العرض يجب أن يكون بين -90 و 90 وخط الطول بين -180 و 180',
+      };
+    }
+
+    const commission = Number(data.commission_percent ?? 10);
+    if (isNaN(commission) || commission < 0 || commission > 100) {
+      return { success: false, error: 'نسبة العمولة يجب أن تكون بين 0% و 100%' };
+    }
+
+    const radius = Number(data.max_delivery_radius_km ?? 15);
+    if (isNaN(radius) || radius <= 0) {
+      return { success: false, error: 'نطاق التوصيل يجب أن يكون أكبر من صفر كم' };
+    }
+
+    const fee = Number(data.delivery_fee ?? 0);
+    if (isNaN(fee) || fee < 0) {
+      return { success: false, error: 'رسوم التوصيل يجب أن تكون صفر أو قيمة موجبة' };
     }
 
     try {
@@ -244,17 +313,26 @@ export const restaurantAdminService = {
         name: data.name.trim(),
         description: data.description?.trim() || null,
         phone: data.phone.trim(),
-        address: data.address.trim(),
-        latitude: Number(data.latitude),
-        longitude: Number(data.longitude),
+        address: finalAddress,
+        latitude: lat,
+        longitude: lng,
         image_url: data.image_url?.trim() || null,
         is_active: data.is_active !== undefined ? Boolean(data.is_active) : true,
         is_open: data.is_open !== undefined ? Boolean(data.is_open) : true,
-        max_delivery_radius_km: Number(data.max_delivery_radius_km || 15),
-        commission_percent: Number(data.commission_percent || 10),
-        delivery_fee: Number(data.delivery_fee || 0),
-        food_money_settlement_mode: data.food_money_settlement_mode || 'periodic_settlement',
+        max_delivery_radius_km: radius,
+        commission_percent: commission,
+        delivery_fee: fee,
+        food_money_settlement_mode:
+          data.food_money_settlement_mode && ['cash_on_delivery', 'online_direct', 'wallet'].includes(data.food_money_settlement_mode)
+            ? data.food_money_settlement_mode
+            : 'cash_on_delivery',
         owner_user_id: data.owner_user_id || null,
+        country_name: data.country_name || 'مصر',
+        governorate_id: data.governorate_id || null,
+        center_id: data.center_id || null,
+        area_id: data.area_id || null,
+        street: data.street?.trim() || null,
+        detailed_address: data.detailed_address?.trim() || null,
         created_at: nowIso,
         updated_at: nowIso,
       };
@@ -269,13 +347,21 @@ export const restaurantAdminService = {
         return { success: false, error: `فشل إنشاء المطعم: ${error.message}` };
       }
 
-      // Link categories if provided
+      // Link categories if provided with explicit error checking
       if (Array.isArray(data.category_ids) && data.category_ids.length > 0 && created?.id) {
         const linkRows = data.category_ids.map((catId) => ({
           restaurant_id: created.id,
           category_id: catId,
         }));
-        await supabase.from('restaurant_category_links').insert(linkRows);
+        const { error: catErr } = await supabase.from('restaurant_category_links').insert(linkRows);
+        if (catErr) {
+          return {
+            success: true,
+            isPartial: true,
+            partialWarning: `تم حفظ المطعم ولكن تعذر ربط بعض التصنيفات: ${catErr.message}`,
+            restaurant: created as Restaurant,
+          };
+        }
       }
 
       return { success: true, restaurant: created as Restaurant };
@@ -287,7 +373,13 @@ export const restaurantAdminService = {
   async updateRestaurant(
     id: string,
     updates: Partial<Restaurant> & { category_ids?: string[] }
-  ): Promise<{ success: boolean; restaurant?: Restaurant; error?: string }> {
+  ): Promise<{
+    success: boolean;
+    restaurant?: Restaurant;
+    isPartial?: boolean;
+    partialWarning?: string;
+    error?: string;
+  }> {
     if (!supabase || !isSupabaseConfigured) {
       return { success: false, error: 'Supabase غير متصل' };
     }
@@ -303,15 +395,64 @@ export const restaurantAdminService = {
       if (updates.description !== undefined) patch.description = updates.description?.trim() || null;
       if (updates.phone !== undefined) patch.phone = updates.phone.trim();
       if (updates.address !== undefined) patch.address = updates.address.trim();
-      if (updates.latitude !== undefined) patch.latitude = Number(updates.latitude);
-      if (updates.longitude !== undefined) patch.longitude = Number(updates.longitude);
+
+      if (updates.country_name !== undefined) patch.country_name = updates.country_name || 'مصر';
+      if (updates.governorate_id !== undefined) patch.governorate_id = updates.governorate_id || null;
+      if (updates.center_id !== undefined) patch.center_id = updates.center_id || null;
+      if (updates.area_id !== undefined) patch.area_id = updates.area_id || null;
+      if (updates.street !== undefined) patch.street = updates.street?.trim() || null;
+      if (updates.detailed_address !== undefined) patch.detailed_address = updates.detailed_address?.trim() || null;
+
+      if (updates.latitude !== undefined) {
+        const lat = Number(updates.latitude);
+        if (isNaN(lat) || lat < -90 || lat > 90) {
+          return { success: false, error: 'خط العرض يجب أن يكون بين -90 و 90' };
+        }
+        patch.latitude = lat;
+      }
+
+      if (updates.longitude !== undefined) {
+        const lng = Number(updates.longitude);
+        if (isNaN(lng) || lng < -180 || lng > 180) {
+          return { success: false, error: 'خط الطول يجب أن يكون بين -180 و 180' };
+        }
+        patch.longitude = lng;
+      }
+
+      if (updates.commission_percent !== undefined) {
+        const commission = Number(updates.commission_percent);
+        if (isNaN(commission) || commission < 0 || commission > 100) {
+          return { success: false, error: 'نسبة العمولة يجب أن تكون بين 0% و 100%' };
+        }
+        patch.commission_percent = commission;
+      }
+
+      if (updates.max_delivery_radius_km !== undefined) {
+        const radius = Number(updates.max_delivery_radius_km);
+        if (isNaN(radius) || radius <= 0) {
+          return { success: false, error: 'نطاق التوصيل يجب أن يكون أكبر من صفر كم' };
+        }
+        patch.max_delivery_radius_km = radius;
+      }
+
+      if (updates.delivery_fee !== undefined) {
+        const fee = Number(updates.delivery_fee);
+        if (isNaN(fee) || fee < 0) {
+          return { success: false, error: 'رسوم التوصيل يجب أن تكون صفر أو قيمة موجبة' };
+        }
+        patch.delivery_fee = fee;
+      }
+
       if (updates.image_url !== undefined) patch.image_url = updates.image_url?.trim() || null;
       if (updates.is_active !== undefined) patch.is_active = Boolean(updates.is_active);
       if (updates.is_open !== undefined) patch.is_open = Boolean(updates.is_open);
-      if (updates.max_delivery_radius_km !== undefined) patch.max_delivery_radius_km = Number(updates.max_delivery_radius_km);
-      if (updates.commission_percent !== undefined) patch.commission_percent = Number(updates.commission_percent);
-      if (updates.delivery_fee !== undefined) patch.delivery_fee = Number(updates.delivery_fee);
-      if (updates.food_money_settlement_mode !== undefined) patch.food_money_settlement_mode = updates.food_money_settlement_mode;
+      if (updates.food_money_settlement_mode !== undefined) {
+        const mode = updates.food_money_settlement_mode;
+        patch.food_money_settlement_mode =
+          ['cash_on_delivery', 'online_direct', 'wallet'].includes(mode)
+            ? mode
+            : 'cash_on_delivery';
+      }
       if (updates.owner_user_id !== undefined) patch.owner_user_id = updates.owner_user_id || null;
 
       const { data: updated, error } = await supabase
@@ -325,15 +466,39 @@ export const restaurantAdminService = {
         return { success: false, error: `فشل تحديث بيانات المطعم: ${error.message}` };
       }
 
-      // Update category links if specified
+      // Update category links if specified with explicit error checking
       if (Array.isArray(updates.category_ids)) {
-        await supabase.from('restaurant_category_links').delete().eq('restaurant_id', id);
+        const { error: delErr } = await supabase
+          .from('restaurant_category_links')
+          .delete()
+          .eq('restaurant_id', id);
+
+        if (delErr) {
+          return {
+            success: true,
+            isPartial: true,
+            partialWarning: `تم تعديل المطعم بنجاح ولكن تعذر مسح روابط التصنيفات السابقة: ${delErr.message}`,
+            restaurant: updated as Restaurant,
+          };
+        }
+
         if (updates.category_ids.length > 0) {
           const links = updates.category_ids.map((cid) => ({
             restaurant_id: id,
             category_id: cid,
           }));
-          await supabase.from('restaurant_category_links').insert(links);
+          const { error: insErr } = await supabase
+            .from('restaurant_category_links')
+            .insert(links);
+
+          if (insErr) {
+            return {
+              success: true,
+              isPartial: true,
+              partialWarning: `تم تعديل بيانات المطعم ولكن تعذر ربط التصنيفات الجديدة: ${insErr.message}`,
+              restaurant: updated as Restaurant,
+            };
+          }
         }
       }
 
@@ -350,6 +515,21 @@ export const restaurantAdminService = {
   async toggleRestaurantOpen(id: string, currentStatus: boolean): Promise<{ success: boolean; error?: string }> {
     return this.updateRestaurant(id, { is_open: !currentStatus });
   },
+
+  async getRestaurantCategoryIds(restaurantId: string): Promise<string[]> {
+    if (!supabase || !isSupabaseConfigured || !restaurantId) return [];
+    try {
+      const { data, error } = await supabase
+        .from('restaurant_category_links')
+        .select('category_id')
+        .eq('restaurant_id', restaurantId);
+      if (error || !data) return [];
+      return data.map((d: any) => d.category_id).filter(Boolean);
+    } catch {
+      return [];
+    }
+  },
+
 
   // ==========================================================================
   // 3. RESTAURANT CATEGORIES (public.restaurant_categories & restaurant_category_links)
@@ -955,8 +1135,16 @@ export const restaurantAdminService = {
     if (!id) return { success: false, error: 'معرف المجموعة مطلوب' };
 
     try {
-      // Delete option values first
-      await supabase.from('restaurant_item_option_values').delete().eq('option_id', id);
+      // Delete option values first with explicit error check
+      const { error: valDelErr } = await supabase
+        .from('restaurant_item_option_values')
+        .delete()
+        .eq('option_id', id);
+
+      if (valDelErr) {
+        return { success: false, error: `فشل حذف قيم مجموعة الاختيار: ${valDelErr.message}` };
+      }
+
       const { error } = await supabase.from('restaurant_item_options').delete().eq('id', id);
       if (error) {
         return { success: false, error: `فشل حذف المجموعة: ${error.message}` };
@@ -1111,6 +1299,9 @@ export const restaurantAdminService = {
     if (data.discount_value === undefined || Number(data.discount_value) <= 0) {
       return { success: false, error: 'قيمة الخصم يجب أن تكون أكبر من صفر' };
     }
+    if (data.discount_type === 'percentage' && Number(data.discount_value) > 100) {
+      return { success: false, error: 'نسبة الخصم لا يمكن أن تتجاوز 100%' };
+    }
     if (!data.starts_at || !data.ends_at) {
       return { success: false, error: 'تاريخ بداية ونهاية العرض مطلوبان' };
     }
@@ -1160,7 +1351,17 @@ export const restaurantAdminService = {
       if (updates.title !== undefined) patch.title = updates.title.trim();
       if (updates.description !== undefined) patch.description = updates.description?.trim() || null;
       if (updates.discount_type !== undefined) patch.discount_type = updates.discount_type;
-      if (updates.discount_value !== undefined) patch.discount_value = Number(updates.discount_value);
+      if (updates.discount_value !== undefined) {
+        const val = Number(updates.discount_value);
+        if (isNaN(val) || val <= 0) {
+          return { success: false, error: 'قيمة الخصم يجب أن تكون أكبر من صفر' };
+        }
+        const effectiveType = updates.discount_type || 'percentage';
+        if (effectiveType === 'percentage' && val > 100) {
+          return { success: false, error: 'نسبة الخصم لا يمكن أن تتجاوز 100%' };
+        }
+        patch.discount_value = val;
+      }
       if (updates.starts_at !== undefined) patch.starts_at = updates.starts_at;
       if (updates.ends_at !== undefined) patch.ends_at = updates.ends_at;
       if (updates.is_active !== undefined) patch.is_active = Boolean(updates.is_active);
@@ -1223,7 +1424,7 @@ export const restaurantAdminService = {
       let query = supabase
         .from('restaurant_orders')
         .select(
-          'id, order_number, customer_user_id, restaurant_id, fulfillment_route, status, restaurant_name_snapshot, restaurant_phone_snapshot, restaurant_latitude_snapshot, restaurant_longitude_snapshot, customer_name, customer_phone, delivery_address, delivery_latitude, delivery_longitude, food_subtotal, discount_amount, delivery_fee, customer_total, commission_percent_snapshot, driver_fee_share, admin_fee_share, restaurant_fee_share, payment_method, restaurant_confirmed_at, restaurant_rejected_at, restaurant_confirmation_method, cancellation_reason, idempotency_key, created_at, updated_at'
+          'id, order_number, customer_user_id, restaurant_id, fulfillment_route, status, restaurant_name_snapshot, restaurant_phone_snapshot, restaurant_latitude_snapshot, restaurant_longitude_snapshot, customer_name, customer_phone, delivery_address, delivery_latitude, delivery_longitude, food_subtotal, discount_amount, delivery_fee, customer_total, commission_percent_snapshot, driver_fee_share, admin_fee_share, restaurant_fee_share, payment_method, restaurant_confirmed_at, restaurant_rejected_at, restaurant_confirmation_method, cancellation_reason, idempotency_key, delivery_area_id, delivery_governorate_name_snapshot, delivery_center_name_snapshot, delivery_area_name_snapshot, created_at, updated_at'
         )
         .order('created_at', { ascending: false });
 
@@ -1802,6 +2003,454 @@ export const restaurantAdminService = {
       return { stats };
     } catch (err: any) {
       return { stats: emptyStats, error: err?.message || 'تعذر حساب إحصاءات المطاعم' };
+    }
+  },
+
+  // ==========================================================================
+  // 15. EGYPTIAN ADMINISTRATIVE ADDRESS HIERARCHY
+  // Tables: food_governorates, food_centers, food_areas
+  // ==========================================================================
+  async getFoodGovernorates(): Promise<{ governorates: FoodGovernorate[]; error?: string }> {
+    if (!supabase || !isSupabaseConfigured) {
+      return { governorates: [], error: 'Supabase غير متصل' };
+    }
+    try {
+      const { data, error } = await supabase
+        .from('food_governorates')
+        .select('id, country_name, name_ar, name_en, code, is_active, sort_order')
+        .eq('is_active', true)
+        .order('sort_order', { ascending: true })
+        .order('name_ar', { ascending: true });
+
+      if (error) {
+        return { governorates: [], error: `فشل جلب قائمة المحافظات: ${error.message}` };
+      }
+      return { governorates: (data || []) as FoodGovernorate[] };
+    } catch (err: any) {
+      return { governorates: [], error: err?.message || 'تعذر جلب المحافظات' };
+    }
+  },
+
+  async getFoodCenters(governorateId: string): Promise<{ centers: FoodCenter[]; error?: string }> {
+    if (!supabase || !isSupabaseConfigured) {
+      return { centers: [], error: 'Supabase غير متصل' };
+    }
+    if (!governorateId) return { centers: [] };
+    try {
+      const { data, error } = await supabase
+        .from('food_centers')
+        .select('id, governorate_id, name_ar, name_en, is_active, sort_order, source_code')
+        .eq('governorate_id', governorateId)
+        .eq('is_active', true)
+        .order('sort_order', { ascending: true })
+        .order('name_ar', { ascending: true });
+
+      if (error) {
+        return { centers: [], error: `فشل جلب قائمة المراكز/الأقسام: ${error.message}` };
+      }
+      return { centers: (data || []) as FoodCenter[] };
+    } catch (err: any) {
+      return { centers: [], error: err?.message || 'تعذر جلب المراكز' };
+    }
+  },
+
+  async getFoodAreas(centerId: string, governorateId?: string): Promise<{ areas: FoodArea[]; error?: string }> {
+    if (!supabase || !isSupabaseConfigured) {
+      return { areas: [], error: 'Supabase غير متصل' };
+    }
+    if (!centerId) return { areas: [] };
+    try {
+      let query = supabase
+        .from('food_areas')
+        .select('id, governorate_id, center_id, name_ar, name_en, is_active, sort_order')
+        .eq('center_id', centerId)
+        .eq('is_active', true);
+
+      if (governorateId) {
+        query = query.eq('governorate_id', governorateId);
+      }
+
+      const { data, error } = await query
+        .order('sort_order', { ascending: true })
+        .order('name_ar', { ascending: true });
+
+      if (error) {
+        return { areas: [], error: `فشل جلب قائمة المناطق: ${error.message}` };
+      }
+      return { areas: (data || []) as FoodArea[] };
+    } catch (err: any) {
+      return { areas: [], error: err?.message || 'تعذر جلب المناطق' };
+    }
+  },
+
+  // ==========================================================================
+  // 16. RESTAURANT SERVICE AREAS & DELIVERY FEES
+  // Tables: restaurant_service_areas & restaurant_area_delivery_fees
+  // ==========================================================================
+  async getRestaurantServiceAreas(restaurantId: string): Promise<{
+    serviceAreas: RestaurantServiceArea[];
+    error?: string;
+  }> {
+    if (!supabase || !isSupabaseConfigured) {
+      return { serviceAreas: [], error: 'Supabase غير متصل' };
+    }
+    if (!restaurantId) return { serviceAreas: [] };
+
+    try {
+      const [areasRes, feesRes] = await Promise.all([
+        supabase
+          .from('restaurant_service_areas')
+          .select('id, restaurant_id, governorate_id, center_id, area_id, is_active, created_at, updated_at')
+          .eq('restaurant_id', restaurantId)
+          .order('created_at', { ascending: false }),
+        supabase
+          .from('restaurant_area_delivery_fees')
+          .select('id, restaurant_id, area_id, delivery_fee, is_active')
+          .eq('restaurant_id', restaurantId),
+      ]);
+
+      if (areasRes.error) {
+        return { serviceAreas: [], error: `فشل جلب مناطق التوصيل: ${areasRes.error.message}` };
+      }
+
+      const rawAreas = (areasRes.data || []) as RestaurantServiceArea[];
+      const feesMap = new Map<string, number>();
+      (feesRes.data || []).forEach((f: any) => feesMap.set(f.area_id, Number(f.delivery_fee)));
+
+      if (rawAreas.length === 0) {
+        return { serviceAreas: [] };
+      }
+
+      // Collect unique area, center, and governorate IDs to fetch human-readable labels
+      const areaIds = Array.from(new Set(rawAreas.map((a) => a.area_id).filter(Boolean)));
+      const centerIds = Array.from(new Set(rawAreas.map((a) => a.center_id).filter((c): c is string => Boolean(c))));
+      const govIds = Array.from(new Set(rawAreas.map((a) => a.governorate_id).filter((g): g is string => Boolean(g))));
+
+      const [areasMeta, centersMeta, govsMeta] = await Promise.all([
+        areaIds.length > 0
+          ? supabase.from('food_areas').select('id, name_ar, center_id, governorate_id').in('id', areaIds)
+          : Promise.resolve({ data: [] }),
+        centerIds.length > 0
+          ? supabase.from('food_centers').select('id, name_ar').in('id', centerIds)
+          : Promise.resolve({ data: [] }),
+        govIds.length > 0
+          ? supabase.from('food_governorates').select('id, name_ar').in('id', govIds)
+          : Promise.resolve({ data: [] }),
+      ]);
+
+      const aMap = new Map<string, any>();
+      (areasMeta.data || []).forEach((item: any) => aMap.set(item.id, item));
+
+      const cMap = new Map<string, any>();
+      (centersMeta.data || []).forEach((item: any) => cMap.set(item.id, item));
+
+      const gMap = new Map<string, any>();
+      (govsMeta.data || []).forEach((item: any) => gMap.set(item.id, item));
+
+      const enriched: RestaurantServiceArea[] = rawAreas.map((item) => {
+        const areaInfo = aMap.get(item.area_id);
+        const centerId = item.center_id || areaInfo?.center_id;
+        const govId = item.governorate_id || areaInfo?.governorate_id;
+
+        return {
+          ...item,
+          delivery_fee: feesMap.has(item.area_id) ? feesMap.get(item.area_id) : undefined,
+          area_name_ar: areaInfo?.name_ar || '—',
+          center_name_ar: cMap.get(centerId)?.name_ar || '—',
+          governorate_name_ar: gMap.get(govId)?.name_ar || '—',
+        };
+      });
+
+      return { serviceAreas: enriched };
+    } catch (err: any) {
+      return { serviceAreas: [], error: err?.message || 'تعذر جلب مناطق التوصيل' };
+    }
+  },
+
+  async upsertRestaurantServiceAreaAndFee(data: {
+    restaurant_id: string;
+    governorate_id?: string | null;
+    center_id?: string | null;
+    area_id: string;
+    is_active?: boolean;
+    delivery_fee: number;
+  }): Promise<{ success: boolean; error?: string }> {
+    if (!supabase || !isSupabaseConfigured) {
+      return { success: false, error: 'Supabase غير متصل' };
+    }
+    if (!data.restaurant_id) return { success: false, error: 'معرف المطعم مطلوب' };
+    if (!data.area_id) return { success: false, error: 'يرجى اختيار المنطقة' };
+
+    const fee = Number(data.delivery_fee);
+    if (isNaN(fee) || fee < 0) {
+      return { success: false, error: 'رسوم التوصيل للمنطقة يجب أن تكون صفر أو قيمة موجبة' };
+    }
+
+    const isActive = data.is_active !== undefined ? Boolean(data.is_active) : true;
+    const nowIso = new Date().toISOString();
+
+    try {
+      // 1. Check if restaurant_service_areas already has this pair
+      const { data: existingArea, error: findAreaErr } = await supabase
+        .from('restaurant_service_areas')
+        .select('id, restaurant_id, area_id')
+        .eq('restaurant_id', data.restaurant_id)
+        .eq('area_id', data.area_id)
+        .maybeSingle();
+
+      if (findAreaErr) {
+        return { success: false, error: `فشل التحقق من نطاق التوصيل: ${findAreaErr.message}` };
+      }
+
+      if (existingArea?.id) {
+        const { error: updateAreaErr } = await supabase
+          .from('restaurant_service_areas')
+          .update({
+            is_active: isActive,
+            governorate_id: data.governorate_id || null,
+            center_id: data.center_id || null,
+            updated_at: nowIso,
+          })
+          .eq('id', existingArea.id);
+
+        if (updateAreaErr) {
+          return { success: false, error: `فشل تحديث منطقة التوصيل: ${updateAreaErr.message}` };
+        }
+      } else {
+        const { error: insertAreaErr } = await supabase
+          .from('restaurant_service_areas')
+          .insert({
+            restaurant_id: data.restaurant_id,
+            governorate_id: data.governorate_id || null,
+            center_id: data.center_id || null,
+            area_id: data.area_id,
+            is_active: isActive,
+            created_at: nowIso,
+            updated_at: nowIso,
+          });
+
+        if (insertAreaErr) {
+          return { success: false, error: `فشل إضافة منطقة التوصيل: ${insertAreaErr.message}` };
+        }
+      }
+
+      // 2. Upsert in restaurant_area_delivery_fees
+      const { data: existingFee, error: findFeeErr } = await supabase
+        .from('restaurant_area_delivery_fees')
+        .select('id')
+        .eq('restaurant_id', data.restaurant_id)
+        .eq('area_id', data.area_id)
+        .maybeSingle();
+
+      if (findFeeErr) {
+        return { success: false, error: `فشل التحقق من رسوم المنطقة: ${findFeeErr.message}` };
+      }
+
+      if (existingFee?.id) {
+        const { error: updateFeeErr } = await supabase
+          .from('restaurant_area_delivery_fees')
+          .update({
+            delivery_fee: fee,
+            is_active: isActive,
+            updated_at: nowIso,
+          })
+          .eq('id', existingFee.id);
+
+        if (updateFeeErr) {
+          return { success: false, error: `فشل تحديث رسوم توصيل المنطقة: ${updateFeeErr.message}` };
+        }
+      } else {
+        const { error: insertFeeErr } = await supabase
+          .from('restaurant_area_delivery_fees')
+          .insert({
+            restaurant_id: data.restaurant_id,
+            area_id: data.area_id,
+            delivery_fee: fee,
+            is_active: isActive,
+            created_at: nowIso,
+            updated_at: nowIso,
+          });
+
+        if (insertFeeErr) {
+          return { success: false, error: `فشل حفظ رسوم توصيل المنطقة: ${insertFeeErr.message}` };
+        }
+      }
+
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err?.message || 'تعذر حفظ منطقة ورسوم التوصيل' };
+    }
+  },
+
+  async toggleRestaurantServiceArea(
+    serviceAreaId: string,
+    isActive: boolean
+  ): Promise<{ success: boolean; error?: string }> {
+    if (!supabase || !isSupabaseConfigured) {
+      return { success: false, error: 'Supabase غير متصل' };
+    }
+    if (!serviceAreaId) return { success: false, error: 'معرف نطاق التوصيل مطلوب' };
+
+    try {
+      const nowIso = new Date().toISOString();
+      const { data: current, error: getErr } = await supabase
+        .from('restaurant_service_areas')
+        .select('restaurant_id, area_id')
+        .eq('id', serviceAreaId)
+        .single();
+
+      if (getErr || !current) {
+        return { success: false, error: getErr?.message || 'لم يتم العثور على النطاق' };
+      }
+
+      const { error: areaErr } = await supabase
+        .from('restaurant_service_areas')
+        .update({ is_active: isActive, updated_at: nowIso })
+        .eq('id', serviceAreaId);
+
+      if (areaErr) {
+        return { success: false, error: `فشل تحديث حالة المنطقة: ${areaErr.message}` };
+      }
+
+      // Keep is_active in delivery fees aligned
+      await supabase
+        .from('restaurant_area_delivery_fees')
+        .update({ is_active: isActive, updated_at: nowIso })
+        .eq('restaurant_id', current.restaurant_id)
+        .eq('area_id', current.area_id);
+
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err?.message || 'تعذر تحديث حالة منطقة التوصيل' };
+    }
+  },
+
+  async deleteRestaurantServiceArea(
+    serviceAreaId: string
+  ): Promise<{ success: boolean; error?: string }> {
+    if (!supabase || !isSupabaseConfigured) {
+      return { success: false, error: 'Supabase غير متصل' };
+    }
+    if (!serviceAreaId) return { success: false, error: 'معرف نطاق التوصيل مطلوب' };
+
+    try {
+      const { data: current, error: getErr } = await supabase
+        .from('restaurant_service_areas')
+        .select('restaurant_id, area_id')
+        .eq('id', serviceAreaId)
+        .single();
+
+      if (getErr || !current) {
+        return { success: false, error: getErr?.message || 'لم يتم العثور على النطاق' };
+      }
+
+      const { error: delErr } = await supabase
+        .from('restaurant_service_areas')
+        .delete()
+        .eq('id', serviceAreaId);
+
+      if (delErr) {
+        return { success: false, error: `فشل إزالة منطقة التوصيل: ${delErr.message}` };
+      }
+
+      await supabase
+        .from('restaurant_area_delivery_fees')
+        .delete()
+        .eq('restaurant_id', current.restaurant_id)
+        .eq('area_id', current.area_id);
+
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err?.message || 'تعذر إزالة منطقة التوصيل' };
+    }
+  },
+
+  async validateAndCalculateDeliverySnapshot(
+    restaurantId: string,
+    areaId: string
+  ): Promise<{
+    isServiced: boolean;
+    delivery_fee: number;
+    delivery_area_id: string;
+    delivery_governorate_name_snapshot?: string | null;
+    delivery_center_name_snapshot?: string | null;
+    delivery_area_name_snapshot?: string | null;
+    error?: string;
+  }> {
+    if (!supabase || !isSupabaseConfigured) {
+      return { isServiced: false, delivery_fee: 0, delivery_area_id: areaId, error: 'Supabase غير متصل' };
+    }
+    try {
+      const { data: serviceArea, error: sErr } = await supabase
+        .from('restaurant_service_areas')
+        .select('id, is_active, governorate_id, center_id, area_id')
+        .eq('restaurant_id', restaurantId)
+        .eq('area_id', areaId)
+        .maybeSingle();
+
+      if (sErr) {
+        return { isServiced: false, delivery_fee: 0, delivery_area_id: areaId, error: sErr.message };
+      }
+
+      if (!serviceArea || !serviceArea.is_active) {
+        return { isServiced: false, delivery_fee: 0, delivery_area_id: areaId, error: 'المطعم لا يغطي هذه المنطقة حالياً' };
+      }
+
+      const [feeRes, restRes, areaInfoRes] = await Promise.all([
+        supabase
+          .from('restaurant_area_delivery_fees')
+          .select('delivery_fee, is_active')
+          .eq('restaurant_id', restaurantId)
+          .eq('area_id', areaId)
+          .maybeSingle(),
+        supabase
+          .from('restaurants')
+          .select('delivery_fee')
+          .eq('id', restaurantId)
+          .single(),
+        supabase
+          .from('food_areas')
+          .select('id, name_ar, center_id, governorate_id')
+          .eq('id', areaId)
+          .single(),
+      ]);
+
+      const defaultFee = Number(restRes.data?.delivery_fee || 15);
+      const fee = (feeRes.data?.is_active && feeRes.data?.delivery_fee !== undefined)
+        ? Number(feeRes.data.delivery_fee)
+        : defaultFee;
+
+      const areaData = areaInfoRes.data;
+      let centerName: string | null = null;
+      let govName: string | null = null;
+
+      if (areaData?.center_id) {
+        const { data: centerRow } = await supabase
+          .from('food_centers')
+          .select('name_ar')
+          .eq('id', areaData.center_id)
+          .single();
+        centerName = centerRow?.name_ar || null;
+      }
+      if (areaData?.governorate_id) {
+        const { data: govRow } = await supabase
+          .from('food_governorates')
+          .select('name_ar')
+          .eq('id', areaData.governorate_id)
+          .single();
+        govName = govRow?.name_ar || null;
+      }
+
+      return {
+        isServiced: true,
+        delivery_fee: fee,
+        delivery_area_id: areaId,
+        delivery_governorate_name_snapshot: govName,
+        delivery_center_name_snapshot: centerName,
+        delivery_area_name_snapshot: areaData?.name_ar || null,
+      };
+    } catch (err: any) {
+      return { isServiced: false, delivery_fee: 0, delivery_area_id: areaId, error: err?.message || 'تعذر التحقق من التوصيل' };
     }
   },
 };

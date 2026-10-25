@@ -22,10 +22,14 @@ import {
   PharmacySavedPrescription,
   PharmacyOrderFile,
 } from '../types';
+import { restaurantAdminService } from '../services/restaurantAdminService';
+import { RestaurantOverviewStats } from '../types/restaurantAdminTypes';
 import {
   Users,
   Receipt,
   Package,
+  PackageCheck,
+  LayoutDashboard,
   Bell,
   ArrowUpRight,
   RefreshCw,
@@ -51,6 +55,14 @@ import {
   Check,
   Maximize2,
   ExternalLink,
+  UtensilsCrossed,
+  Store,
+  Tag,
+  BookOpen,
+  ListPlus,
+  Percent,
+  Wallet,
+  Sliders,
 } from 'lucide-react';
 
 interface DriverDocMetaItem {
@@ -126,6 +138,8 @@ export const AdminOverview: React.FC = () => {
     hasPermission('orders.manage');
   const canApproveDrivers =
     hasPermission('drivers.approve') || hasPermission('delivery.manage');
+  const canViewRestaurants = hasPermission('restaurants.view');
+  const canManageRestaurants = hasPermission('restaurants.manage');
 
   const canViewOrderBySource = useCallback(
     (source: 'delivery' | 'pharmacy') =>
@@ -146,6 +160,10 @@ export const AdminOverview: React.FC = () => {
   const [pharmacyStats, setPharmacyStats] = useState<PharmacyStatsSummary | null>(null);
   const [isPharmacyLoading, setIsPharmacyLoading] = useState<boolean>(true);
   const [pharmacyError, setPharmacyError] = useState<string | null>(null);
+
+  const [restaurantStats, setRestaurantStats] = useState<RestaurantOverviewStats | null>(null);
+  const [isRestaurantStatsLoading, setIsRestaurantStatsLoading] = useState<boolean>(true);
+  const [restaurantStatsError, setRestaurantStatsError] = useState<string | null>(null);
 
   const [assignedSearch, setAssignedSearch] = useState<string>('');
   const [activeQueueTab, setActiveQueueTab] = useState<
@@ -228,11 +246,21 @@ export const AdminOverview: React.FC = () => {
     setCommandError(null);
     setIsPharmacyLoading(true);
     setPharmacyError(null);
+    if (canViewRestaurants) {
+      setIsRestaurantStatsLoading(true);
+      setRestaurantStatsError(null);
+    }
 
     try {
-      const [cmdRes, pharmRes] = await Promise.all([
+      const [cmdRes, pharmRes, restRes] = await Promise.all([
         adminService.getOperationalCommandCenterData(),
         adminService.getPharmacyStatsSummary(),
+        canViewRestaurants
+          ? restaurantAdminService.getOverviewStats()
+          : Promise.resolve<{ stats: RestaurantOverviewStats | null; error?: string }>({
+              stats: null,
+              error: undefined,
+            }),
       ]);
 
       setCommandData(cmdRes?.data ?? null);
@@ -244,13 +272,21 @@ export const AdminOverview: React.FC = () => {
       if (pharmRes?.error) {
         setPharmacyError(pharmRes.error);
       }
+
+      if (canViewRestaurants) {
+        setRestaurantStats(restRes?.stats ?? null);
+        if (restRes?.error) {
+          setRestaurantStatsError(restRes.error);
+        }
+      }
     } catch (e: any) {
       setCommandError(e?.message || 'تعذر جلب بيانات مركز المتابعة من قاعدة البيانات');
     } finally {
       setIsCommandLoading(false);
       setIsPharmacyLoading(false);
+      setIsRestaurantStatsLoading(false);
     }
-  }, []);
+  }, [canViewRestaurants]);
 
   useEffect(() => {
     loadOperationalData();
@@ -677,7 +713,8 @@ export const AdminOverview: React.FC = () => {
     custom: 'فترة مخصصة',
   };
 
-  const isAnyLoading = isStatsLoading || isCommandLoading;
+  const isAnyLoading =
+    isStatsLoading || isCommandLoading || isPharmacyLoading || isRestaurantStatsLoading;
 
   /**
    * Renders a numeric metric while strictly distinguishing between:
@@ -1543,8 +1580,367 @@ export const AdminOverview: React.FC = () => {
               </button>
             </div>
           </div>
+
+          {/* 8. إدارة المطاعم والأكلات الجاهزة (Prepared Food & Restaurants) */}
+          {canViewRestaurants && (
+            <div
+              onClick={() => navigateToSection('restaurant_overview')}
+              className="group bg-slate-900/90 hover:bg-slate-900 border border-amber-500/30 hover:border-amber-400 rounded-3xl p-4 sm:p-5 transition-all flex flex-col justify-between cursor-pointer shadow-md"
+            >
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-amber-500/15 text-amber-300 border border-amber-500/30 text-xs font-black">
+                    <UtensilsCrossed className="w-3.5 h-3.5" />
+                    <span>المطاعم والأكلات</span>
+                  </span>
+                  <ArrowUpRight className="w-4 h-4 text-slate-500 group-hover:text-amber-400 transition-colors" />
+                </div>
+
+                <div>
+                  <h3 className="text-sm font-black text-white">إدارة المطاعم والوجبات</h3>
+                  <p className="text-[11px] text-slate-400 mt-0.5">
+                    متابعة المطاعم الشريكة، القوائم، والطلبات الحية
+                  </p>
+                </div>
+
+                {renderMetricValue(restaurantStats?.totalOrders, {
+                  loading: isRestaurantStatsLoading,
+                  error: restaurantStatsError,
+                  zeroLabel: 'لا توجد طلبات مسجلة',
+                  suffix: 'طلب كلي',
+                })}
+              </div>
+
+              <div
+                className="mt-4 pt-3 border-t border-slate-800/80 grid grid-cols-3 gap-1.5"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <button
+                  type="button"
+                  onClick={() => navigateToSection('restaurant_orders')}
+                  className="px-2 py-2 rounded-xl bg-slate-950 hover:bg-amber-500/15 border border-slate-800 hover:border-amber-500/40 text-right transition-colors cursor-pointer"
+                >
+                  <span className="text-[10px] text-slate-400 block truncate">الطلبات النشطة</span>
+                  <span className="text-xs font-black font-mono text-amber-300">
+                    {isRestaurantStatsLoading
+                      ? '...'
+                      : (restaurantStats?.activeOrders ?? 0) + (restaurantStats?.pendingOrders ?? 0)}
+                  </span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => navigateToSection('restaurant_restaurants')}
+                  className="px-2 py-2 rounded-xl bg-slate-950 hover:bg-emerald-500/15 border border-slate-800 hover:border-emerald-500/40 text-right transition-colors cursor-pointer"
+                >
+                  <span className="text-[10px] text-slate-400 block truncate">المطاعم</span>
+                  <span className="text-xs font-black font-mono text-emerald-300">
+                    {isRestaurantStatsLoading ? '...' : (restaurantStats?.totalRestaurants ?? '—')}
+                  </span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => navigateToSection('restaurant_complaints')}
+                  className="px-2 py-2 rounded-xl bg-slate-950 hover:bg-rose-500/15 border border-slate-800 hover:border-rose-500/40 text-right transition-colors cursor-pointer"
+                >
+                  <span className="text-[10px] text-slate-400 block truncate">الشكاوى</span>
+                  <span className="text-xs font-black font-mono text-rose-300">
+                    {isRestaurantStatsLoading ? '...' : (restaurantStats?.pendingComplaints ?? '0')}
+                  </span>
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       </section>
+
+      {/* =================================================================== */}
+      {/* 2.5 بوابة إدارة المطاعم والأكلات الجاهزة — وصول سريع ومؤشرات حية   */}
+      {/* =================================================================== */}
+      {canViewRestaurants && (
+        <section className="bg-slate-900/90 border border-slate-800 rounded-3xl p-4 sm:p-6 space-y-5 shadow-lg">
+          <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-slate-800 pb-4">
+            <div>
+              <div className="flex items-center gap-2">
+                <div className="w-8 h-8 rounded-xl bg-amber-500/15 border border-amber-500/30 text-amber-400 flex items-center justify-center">
+                  <UtensilsCrossed className="w-4 h-4" />
+                </div>
+                <h2 className="text-base sm:text-lg font-black text-white">
+                  بوابة إدارة المطاعم والأكلات الجاهزة
+                </h2>
+                <span className="px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-300 text-[10px] font-bold border border-emerald-500/25">
+                  بيانات حية
+                </span>
+              </div>
+              <p className="text-xs text-slate-400 mt-1">
+                وصول سريع ومباشر لجميع أقسام المطاعم مع مؤشرات تشغيلية لحظية من قاعدة البيانات
+              </p>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => navigateToSection('restaurant_overview')}
+                className="px-4 py-2 rounded-2xl bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-black flex items-center gap-1.5 transition-all cursor-pointer shadow-sm"
+              >
+                <LayoutDashboard className="w-4 h-4" />
+                <span>لوحة تحكم المطاعم الكاملة</span>
+              </button>
+            </div>
+          </div>
+
+          {/* Quick Metrics Bar */}
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+            <div
+              onClick={() => navigateToSection('restaurant_restaurants')}
+              className="bg-slate-950/70 hover:bg-slate-950 border border-slate-800 hover:border-slate-700 rounded-2xl p-3 cursor-pointer transition-all space-y-1"
+            >
+              <span className="text-[10px] font-bold text-slate-400 block">المطاعم الشريكة</span>
+              <div className="flex items-baseline gap-1.5">
+                <span className="text-lg font-black font-mono text-white">
+                  {isRestaurantStatsLoading ? '...' : (restaurantStats?.totalRestaurants ?? 0)}
+                </span>
+                <span className="text-[10px] text-emerald-400 font-bold">
+                  ({isRestaurantStatsLoading ? '—' : `${restaurantStats?.activeRestaurants ?? 0} نشط`})
+                </span>
+              </div>
+            </div>
+
+            <div
+              onClick={() => navigateToSection('restaurant_orders')}
+              className="bg-slate-950/70 hover:bg-slate-950 border border-slate-800 hover:border-slate-700 rounded-2xl p-3 cursor-pointer transition-all space-y-1"
+            >
+              <span className="text-[10px] font-bold text-slate-400 block">الطلبات النشطة</span>
+              <div className="flex items-baseline gap-1.5">
+                <span className="text-lg font-black font-mono text-amber-300">
+                  {isRestaurantStatsLoading
+                    ? '...'
+                    : (restaurantStats?.activeOrders ?? 0) + (restaurantStats?.pendingOrders ?? 0)}
+                </span>
+                <span className="text-[10px] text-slate-400">
+                  من {isRestaurantStatsLoading ? '—' : (restaurantStats?.totalOrders ?? 0)}
+                </span>
+              </div>
+            </div>
+
+            <div
+              onClick={() => navigateToSection('restaurant_menu')}
+              className="bg-slate-950/70 hover:bg-slate-950 border border-slate-800 hover:border-slate-700 rounded-2xl p-3 cursor-pointer transition-all space-y-1"
+            >
+              <span className="text-[10px] font-bold text-slate-400 block">قوائم الطعام</span>
+              <div className="flex items-baseline gap-1.5">
+                <span className="text-lg font-black font-mono text-white">
+                  {isRestaurantStatsLoading ? '...' : (restaurantStats?.totalMenuItems ?? 0)}
+                </span>
+                <span className="text-[10px] text-emerald-400 font-bold">
+                  ({isRestaurantStatsLoading ? '—' : `${restaurantStats?.availableMenuItems ?? 0} متاح`})
+                </span>
+              </div>
+            </div>
+
+            <div
+              onClick={() => navigateToSection('restaurant_offers')}
+              className="bg-slate-950/70 hover:bg-slate-950 border border-slate-800 hover:border-slate-700 rounded-2xl p-3 cursor-pointer transition-all space-y-1"
+            >
+              <span className="text-[10px] font-bold text-slate-400 block">العروض النشطة</span>
+              <div className="flex items-baseline gap-1.5">
+                <span className="text-lg font-black font-mono text-emerald-300">
+                  {isRestaurantStatsLoading ? '...' : (restaurantStats?.activeOffers ?? 0)}
+                </span>
+                <span className="text-[10px] text-slate-400">عرض فعال</span>
+              </div>
+            </div>
+
+            <div
+              onClick={() => navigateToSection('restaurant_complaints')}
+              className="bg-slate-950/70 hover:bg-slate-950 border border-slate-800 hover:border-slate-700 rounded-2xl p-3 cursor-pointer transition-all space-y-1"
+            >
+              <span className="text-[10px] font-bold text-slate-400 block">الشكاوى المفتوحة</span>
+              <div className="flex items-baseline gap-1.5">
+                <span className="text-lg font-black font-mono text-rose-300">
+                  {isRestaurantStatsLoading ? '...' : (restaurantStats?.pendingComplaints ?? 0)}
+                </span>
+                <span className="text-[10px] text-slate-400">قيد المتابعة</span>
+              </div>
+            </div>
+
+            <div
+              onClick={() => navigateToSection('restaurant_invoices')}
+              className="bg-slate-950/70 hover:bg-slate-950 border border-slate-800 hover:border-slate-700 rounded-2xl p-3 cursor-pointer transition-all space-y-1"
+            >
+              <span className="text-[10px] font-bold text-slate-400 block">إجمالي المبيعات</span>
+              <div className="flex items-baseline gap-1">
+                <span className="text-sm font-black font-mono text-purple-300 truncate">
+                  {isRestaurantStatsLoading
+                    ? '...'
+                    : `${Number(restaurantStats?.totalSales ?? 0).toLocaleString('en-US')} ج.م`}
+                </span>
+              </div>
+            </div>
+          </div>
+
+          {/* Direct Section Shortcuts */}
+          <div className="space-y-2">
+            <span className="text-xs font-bold text-slate-400 block">الوصول السريع لصفحات القسم:</span>
+            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-2 text-xs">
+              <button
+                type="button"
+                onClick={() => navigateToSection('restaurant_restaurants')}
+                className="p-3 rounded-2xl bg-slate-950 hover:bg-slate-800/80 border border-slate-800 hover:border-amber-500/30 text-right transition-all flex items-center gap-2.5 cursor-pointer group"
+              >
+                <div className="w-8 h-8 rounded-xl bg-amber-500/10 text-amber-400 flex items-center justify-center shrink-0 group-hover:scale-105 transition-transform">
+                  <Store className="w-4 h-4" />
+                </div>
+                <div className="min-w-0">
+                  <span className="font-bold text-white block truncate">المطاعم</span>
+                  <span className="text-[10px] text-slate-400 block truncate">إدارة ومطاعم</span>
+                </div>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => navigateToSection('restaurant_orders')}
+                className="p-3 rounded-2xl bg-slate-950 hover:bg-slate-800/80 border border-slate-800 hover:border-amber-500/30 text-right transition-all flex items-center gap-2.5 cursor-pointer group"
+              >
+                <div className="w-8 h-8 rounded-xl bg-sky-500/10 text-sky-400 flex items-center justify-center shrink-0 group-hover:scale-105 transition-transform">
+                  <PackageCheck className="w-4 h-4" />
+                </div>
+                <div className="min-w-0">
+                  <span className="font-bold text-white block truncate">طلبات المطاعم</span>
+                  <span className="text-[10px] text-slate-400 block truncate">متابعة حية</span>
+                </div>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => navigateToSection('restaurant_menu')}
+                className="p-3 rounded-2xl bg-slate-950 hover:bg-slate-800/80 border border-slate-800 hover:border-amber-500/30 text-right transition-all flex items-center gap-2.5 cursor-pointer group"
+              >
+                <div className="w-8 h-8 rounded-xl bg-emerald-500/10 text-emerald-400 flex items-center justify-center shrink-0 group-hover:scale-105 transition-transform">
+                  <BookOpen className="w-4 h-4" />
+                </div>
+                <div className="min-w-0">
+                  <span className="font-bold text-white block truncate">قوائم الطعام</span>
+                  <span className="text-[10px] text-slate-400 block truncate">الأصناف والأسعار</span>
+                </div>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => navigateToSection('restaurant_categories')}
+                className="p-3 rounded-2xl bg-slate-950 hover:bg-slate-800/80 border border-slate-800 hover:border-amber-500/30 text-right transition-all flex items-center gap-2.5 cursor-pointer group"
+              >
+                <div className="w-8 h-8 rounded-xl bg-purple-500/10 text-purple-400 flex items-center justify-center shrink-0 group-hover:scale-105 transition-transform">
+                  <Tag className="w-4 h-4" />
+                </div>
+                <div className="min-w-0">
+                  <span className="font-bold text-white block truncate">التصنيفات</span>
+                  <span className="text-[10px] text-slate-400 block truncate">تصنيف المطاعم</span>
+                </div>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => navigateToSection('restaurant_offers')}
+                className="p-3 rounded-2xl bg-slate-950 hover:bg-slate-800/80 border border-slate-800 hover:border-amber-500/30 text-right transition-all flex items-center gap-2.5 cursor-pointer group"
+              >
+                <div className="w-8 h-8 rounded-xl bg-rose-500/10 text-rose-400 flex items-center justify-center shrink-0 group-hover:scale-105 transition-transform">
+                  <Percent className="w-4 h-4" />
+                </div>
+                <div className="min-w-0">
+                  <span className="font-bold text-white block truncate">العروض</span>
+                  <span className="text-[10px] text-slate-400 block truncate">الخصومات والتوفير</span>
+                </div>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => navigateToSection('restaurant_delivery')}
+                className="p-3 rounded-2xl bg-slate-950 hover:bg-slate-800/80 border border-slate-800 hover:border-amber-500/30 text-right transition-all flex items-center gap-2.5 cursor-pointer group"
+              >
+                <div className="w-8 h-8 rounded-xl bg-teal-500/10 text-teal-400 flex items-center justify-center shrink-0 group-hover:scale-105 transition-transform">
+                  <Bike className="w-4 h-4" />
+                </div>
+                <div className="min-w-0">
+                  <span className="font-bold text-white block truncate">التوصيل</span>
+                  <span className="text-[10px] text-slate-400 block truncate">إسناد وتتبع</span>
+                </div>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => navigateToSection('restaurant_settlements')}
+                className="p-3 rounded-2xl bg-slate-950 hover:bg-slate-800/80 border border-slate-800 hover:border-amber-500/30 text-right transition-all flex items-center gap-2.5 cursor-pointer group"
+              >
+                <div className="w-8 h-8 rounded-xl bg-indigo-500/10 text-indigo-400 flex items-center justify-center shrink-0 group-hover:scale-105 transition-transform">
+                  <Wallet className="w-4 h-4" />
+                </div>
+                <div className="min-w-0">
+                  <span className="font-bold text-white block truncate">التسويات</span>
+                  <span className="text-[10px] text-slate-400 block truncate">حسابات المطاعم</span>
+                </div>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => navigateToSection('restaurant_complaints')}
+                className="p-3 rounded-2xl bg-slate-950 hover:bg-slate-800/80 border border-slate-800 hover:border-amber-500/30 text-right transition-all flex items-center gap-2.5 cursor-pointer group"
+              >
+                <div className="w-8 h-8 rounded-xl bg-red-500/10 text-red-400 flex items-center justify-center shrink-0 group-hover:scale-105 transition-transform">
+                  <AlertTriangle className="w-4 h-4" />
+                </div>
+                <div className="min-w-0">
+                  <span className="font-bold text-white block truncate">الشكاوى</span>
+                  <span className="text-[10px] text-slate-400 block truncate">متابعة البلاغات</span>
+                </div>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => navigateToSection('restaurant_options')}
+                className="p-3 rounded-2xl bg-slate-950 hover:bg-slate-800/80 border border-slate-800 hover:border-amber-500/30 text-right transition-all flex items-center gap-2.5 cursor-pointer group"
+              >
+                <div className="w-8 h-8 rounded-xl bg-cyan-500/10 text-cyan-400 flex items-center justify-center shrink-0 group-hover:scale-105 transition-transform">
+                  <ListPlus className="w-4 h-4" />
+                </div>
+                <div className="min-w-0">
+                  <span className="font-bold text-white block truncate">الإضافات</span>
+                  <span className="text-[10px] text-slate-400 block truncate">خيارات الوجبات</span>
+                </div>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => navigateToSection('restaurant_invoices')}
+                className="p-3 rounded-2xl bg-slate-950 hover:bg-slate-800/80 border border-slate-800 hover:border-amber-500/30 text-right transition-all flex items-center gap-2.5 cursor-pointer group"
+              >
+                <div className="w-8 h-8 rounded-xl bg-amber-500/10 text-amber-400 flex items-center justify-center shrink-0 group-hover:scale-105 transition-transform">
+                  <Receipt className="w-4 h-4" />
+                </div>
+                <div className="min-w-0">
+                  <span className="font-bold text-white block truncate">الفواتير</span>
+                  <span className="text-[10px] text-slate-400 block truncate">فواتير الطلبات</span>
+                </div>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => navigateToSection('restaurant_settings')}
+                className="p-3 rounded-2xl bg-slate-950 hover:bg-slate-800/80 border border-slate-800 hover:border-amber-500/30 text-right transition-all flex items-center gap-2.5 cursor-pointer group"
+              >
+                <div className="w-8 h-8 rounded-xl bg-slate-700/40 text-slate-300 flex items-center justify-center shrink-0 group-hover:scale-105 transition-transform">
+                  <Sliders className="w-4 h-4" />
+                </div>
+                <div className="min-w-0">
+                  <span className="font-bold text-white block truncate">إعدادات القسم</span>
+                  <span className="text-[10px] text-slate-400 block truncate">النطاق والمهلة</span>
+                </div>
+              </button>
+            </div>
+          </div>
+        </section>
+      )}
 
       {/* =================================================================== */}
       {/* 3. اللوحة التفاعلية للمهام الجارية والطلبات المسندة للسائق مع اسمه  */}
