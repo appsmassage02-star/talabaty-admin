@@ -34,6 +34,7 @@ import {
   FoodCenter,
   FoodArea,
   RestaurantServiceArea,
+  RestaurantSectionServiceArea,
   RestaurantAreaDeliveryFee,
 } from '../types/restaurantAdminTypes';
 
@@ -52,7 +53,7 @@ export const restaurantAdminService = {
     try {
       const { data, error } = await supabase
         .from('restaurant_section_settings')
-        .select('id, section_enabled, global_max_delivery_radius_km, no_driver_timeout_minutes, created_at, updated_at')
+        .select('id, section_enabled, global_max_delivery_radius_km, no_driver_timeout_minutes, section_visibility, disabled_display_mode, created_at, updated_at')
         .order('created_at', { ascending: true })
         .limit(1)
         .maybeSingle();
@@ -68,7 +69,7 @@ export const restaurantAdminService = {
 
   async updateSectionSettings(
     id: string,
-    updates: Partial<Pick<RestaurantSectionSettings, 'section_enabled' | 'global_max_delivery_radius_km' | 'no_driver_timeout_minutes'>>
+    updates: Partial<Pick<RestaurantSectionSettings, 'section_enabled' | 'global_max_delivery_radius_km' | 'no_driver_timeout_minutes' | 'section_visibility' | 'disabled_display_mode'>>
   ): Promise<{ success: boolean; settings?: RestaurantSectionSettings; error?: string }> {
     if (!supabase || !isSupabaseConfigured) {
       return { success: false, error: 'Supabase غير متصل' };
@@ -86,6 +87,12 @@ export const restaurantAdminService = {
       }
       if (updates.no_driver_timeout_minutes !== undefined) {
         payload.no_driver_timeout_minutes = Number(updates.no_driver_timeout_minutes);
+      }
+      if (updates.section_visibility !== undefined) {
+        payload.section_visibility = updates.section_visibility;
+      }
+      if (updates.disabled_display_mode !== undefined) {
+        payload.disabled_display_mode = updates.disabled_display_mode;
       }
 
       const { data, error } = await supabase
@@ -323,9 +330,9 @@ export const restaurantAdminService = {
         commission_percent: commission,
         delivery_fee: fee,
         food_money_settlement_mode:
-          data.food_money_settlement_mode && ['cash_on_delivery', 'online_direct', 'wallet'].includes(data.food_money_settlement_mode)
+          data.food_money_settlement_mode && ['per_order', 'daily', 'weekly', 'monthly'].includes(data.food_money_settlement_mode)
             ? data.food_money_settlement_mode
-            : 'cash_on_delivery',
+            : 'per_order',
         owner_user_id: data.owner_user_id || null,
         country_name: data.country_name || 'مصر',
         governorate_id: data.governorate_id || null,
@@ -449,9 +456,9 @@ export const restaurantAdminService = {
       if (updates.food_money_settlement_mode !== undefined) {
         const mode = updates.food_money_settlement_mode;
         patch.food_money_settlement_mode =
-          ['cash_on_delivery', 'online_direct', 'wallet'].includes(mode)
+          ['per_order', 'daily', 'weekly', 'monthly'].includes(mode)
             ? mode
-            : 'cash_on_delivery';
+            : 'per_order';
       }
       if (updates.owner_user_id !== undefined) patch.owner_user_id = updates.owner_user_id || null;
 
@@ -2451,6 +2458,204 @@ export const restaurantAdminService = {
       };
     } catch (err: any) {
       return { isServiced: false, delivery_fee: 0, delivery_area_id: areaId, error: err?.message || 'تعذر التحقق من التوصيل' };
+    }
+  },
+
+  // ==========================================================================
+  // 17. SECTION SERVICE AREAS (public.restaurant_section_service_areas)
+  // Columns: id, governorate_id, center_id, area_id, is_active, created_at, updated_at
+  // Supports multi-level scopes:
+  // - Governorate level (governorate_id set, center_id & area_id null)
+  // - Center level (governorate_id & center_id set, area_id null)
+  // - Area level (governorate_id, center_id & area_id set)
+  // ==========================================================================
+  async getSectionServiceAreas(): Promise<{
+    sectionAreas: RestaurantSectionServiceArea[];
+    error?: string;
+  }> {
+    if (!supabase || !isSupabaseConfigured) {
+      return { sectionAreas: [], error: 'Supabase غير متصل' };
+    }
+    try {
+      const { data: rows, error } = await supabase
+        .from('restaurant_section_service_areas')
+        .select('id, governorate_id, center_id, area_id, is_active, created_at, updated_at')
+        .order('created_at', { ascending: false });
+
+      if (error) {
+        return { sectionAreas: [], error: `فشل جلب نطاقات عمل قسم المطاعم: ${error.message}` };
+      }
+
+      const raw = (rows || []) as RestaurantSectionServiceArea[];
+      if (raw.length === 0) {
+        return { sectionAreas: [] };
+      }
+
+      // Collect unique IDs for enrichment
+      const govIds = Array.from(new Set(raw.map((r) => r.governorate_id).filter((g): g is string => Boolean(g))));
+      const centerIds = Array.from(new Set(raw.map((r) => r.center_id).filter((c): c is string => Boolean(c))));
+      const areaIds = Array.from(new Set(raw.map((r) => r.area_id).filter((a): a is string => Boolean(a))));
+
+      const [govsRes, centersRes, areasRes] = await Promise.all([
+        govIds.length > 0
+          ? supabase.from('food_governorates').select('id, name_ar').in('id', govIds)
+          : Promise.resolve({ data: [] }),
+        centerIds.length > 0
+          ? supabase.from('food_centers').select('id, name_ar').in('id', centerIds)
+          : Promise.resolve({ data: [] }),
+        areaIds.length > 0
+          ? supabase.from('food_areas').select('id, name_ar').in('id', areaIds)
+          : Promise.resolve({ data: [] }),
+      ]);
+
+      const gMap = new Map<string, string>();
+      (govsRes.data || []).forEach((g: any) => gMap.set(g.id, g.name_ar));
+
+      const cMap = new Map<string, string>();
+      (centersRes.data || []).forEach((c: any) => cMap.set(c.id, c.name_ar));
+
+      const aMap = new Map<string, string>();
+      (areasRes.data || []).forEach((a: any) => aMap.set(a.id, a.name_ar));
+
+      const enriched: RestaurantSectionServiceArea[] = raw.map((item) => {
+        let level: 'governorate' | 'center' | 'area' = 'governorate';
+        if (item.area_id) {
+          level = 'area';
+        } else if (item.center_id) {
+          level = 'center';
+        }
+
+        return {
+          ...item,
+          level,
+          governorate_name_ar: item.governorate_id ? gMap.get(item.governorate_id) || '—' : '—',
+          center_name_ar: item.center_id ? cMap.get(item.center_id) || '—' : '—',
+          area_name_ar: item.area_id ? aMap.get(item.area_id) || '—' : '—',
+        };
+      });
+
+      return { sectionAreas: enriched };
+    } catch (err: any) {
+      return { sectionAreas: [], error: err?.message || 'تعذر جلب نطاقات عمل قسم المطاعم' };
+    }
+  },
+
+  async createSectionServiceArea(data: {
+    governorate_id: string;
+    center_id?: string | null;
+    area_id?: string | null;
+    is_active?: boolean;
+  }): Promise<{ success: boolean; sectionArea?: RestaurantSectionServiceArea; error?: string }> {
+    if (!supabase || !isSupabaseConfigured) {
+      return { success: false, error: 'Supabase غير متصل' };
+    }
+    if (!data.governorate_id) {
+      return { success: false, error: 'يرجى اختيار المحافظة على الأقل لتحديد نطاق التشغيل' };
+    }
+
+    const govId = data.governorate_id;
+    const centerId = data.center_id || null;
+    const areaId = data.area_id || null;
+    const isActive = data.is_active !== undefined ? Boolean(data.is_active) : true;
+    const nowIso = new Date().toISOString();
+
+    try {
+      // Deduplication check
+      let dupQuery = supabase
+        .from('restaurant_section_service_areas')
+        .select('id')
+        .eq('governorate_id', govId);
+
+      if (centerId) {
+        dupQuery = dupQuery.eq('center_id', centerId);
+      } else {
+        dupQuery = dupQuery.is('center_id', null);
+      }
+
+      if (areaId) {
+        dupQuery = dupQuery.eq('area_id', areaId);
+      } else {
+        dupQuery = dupQuery.is('area_id', null);
+      }
+
+      const { data: existing, error: dupErr } = await dupQuery.maybeSingle();
+      if (dupErr) {
+        return { success: false, error: `فشل التحقق من عدم التكرار: ${dupErr.message}` };
+      }
+      if (existing) {
+        return { success: false, error: 'هذا النطاق الجغرافي مضاف بالفعل في نطاقات عمل القسم' };
+      }
+
+      const payload = {
+        governorate_id: govId,
+        center_id: centerId,
+        area_id: areaId,
+        is_active: isActive,
+        created_at: nowIso,
+        updated_at: nowIso,
+      };
+
+      const { data: created, error: insErr } = await supabase
+        .from('restaurant_section_service_areas')
+        .insert(payload)
+        .select()
+        .single();
+
+      if (insErr) {
+        return { success: false, error: `فشل إضافة نطاق تشغيل القسم: ${insErr.message}` };
+      }
+
+      return { success: true, sectionArea: created as RestaurantSectionServiceArea };
+    } catch (err: any) {
+      return { success: false, error: err?.message || 'تعذر إضافة نطاق تشغيل القسم' };
+    }
+  },
+
+  async toggleSectionServiceArea(
+    id: string,
+    isActive: boolean
+  ): Promise<{ success: boolean; error?: string }> {
+    if (!supabase || !isSupabaseConfigured) {
+      return { success: false, error: 'Supabase غير متصل' };
+    }
+    if (!id) return { success: false, error: 'معرف نطاق تشغيل القسم مفقود' };
+
+    try {
+      const { error } = await supabase
+        .from('restaurant_section_service_areas')
+        .update({
+          is_active: isActive,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', id);
+
+      if (error) {
+        return { success: false, error: `فشل تغيير حالة نطاق القسم: ${error.message}` };
+      }
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err?.message || 'تعذر تحديث حالة نطاق القسم' };
+    }
+  },
+
+  async deleteSectionServiceArea(id: string): Promise<{ success: boolean; error?: string }> {
+    if (!supabase || !isSupabaseConfigured) {
+      return { success: false, error: 'Supabase غير متصل' };
+    }
+    if (!id) return { success: false, error: 'معرف نطاق تشغيل القسم مفقود' };
+
+    try {
+      const { error } = await supabase
+        .from('restaurant_section_service_areas')
+        .delete()
+        .eq('id', id);
+
+      if (error) {
+        return { success: false, error: `فشل حذف نطاق تشغيل القسم: ${error.message}` };
+      }
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err?.message || 'تعذر حذف نطاق تشغيل القسم' };
     }
   },
 };

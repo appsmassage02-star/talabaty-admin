@@ -3,16 +3,21 @@
  * Strictly matched against authoritative Supabase database schema
  */
 
+export type SectionVisibility = 'visible' | 'hidden';
+export type DisabledDisplayMode = 'show_disabled' | 'hide';
+
 export interface RestaurantSectionSettings {
   id: string;
   section_enabled: boolean;
   global_max_delivery_radius_km: number;
   no_driver_timeout_minutes: number;
+  section_visibility?: SectionVisibility;
+  disabled_display_mode?: DisabledDisplayMode;
   created_at: string;
   updated_at: string;
 }
 
-export type FoodMoneySettlementMode = 'cash_on_delivery' | 'online_direct' | 'wallet';
+export type FoodMoneySettlementMode = 'per_order' | 'daily' | 'weekly' | 'monthly';
 
 export interface Restaurant {
   id: string;
@@ -99,6 +104,21 @@ export interface RestaurantServiceArea {
   governorate_name_ar?: string;
   center_name_ar?: string;
   area_name_ar?: string;
+}
+
+export interface RestaurantSectionServiceArea {
+  id: string;
+  governorate_id?: string | null;
+  center_id?: string | null;
+  area_id?: string | null;
+  is_active: boolean;
+  created_at?: string;
+  updated_at?: string;
+  // Joined / enriched display helper fields
+  governorate_name_ar?: string;
+  center_name_ar?: string;
+  area_name_ar?: string;
+  level?: 'governorate' | 'center' | 'area';
 }
 
 export interface RestaurantAreaDeliveryFee {

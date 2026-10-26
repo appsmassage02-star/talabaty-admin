@@ -34,6 +34,7 @@ import {
   FoodCenter,
   FoodArea,
   RestaurantServiceArea,
+  RestaurantSectionServiceArea,
   RestaurantAreaDeliveryFee,
 } from '../types/restaurantAdminTypes';
 import {
@@ -208,6 +209,25 @@ export const AdminRestaurantManagement: React.FC = () => {
   });
   const [isSavingServiceArea, setIsSavingServiceArea] = useState(false);
 
+  // Section Service Areas State (public.restaurant_section_service_areas)
+  const [sectionServiceAreas, setSectionServiceAreas] = useState<RestaurantSectionServiceArea[]>([]);
+  const [isLoadingSectionAreas, setIsLoadingSectionAreas] = useState(false);
+  const [sectionAreaCenters, setSectionAreaCenters] = useState<FoodCenter[]>([]);
+  const [sectionAreaAreas, setSectionAreaAreas] = useState<FoodArea[]>([]);
+  const [isLoadingSectionHierarchy, setIsLoadingSectionHierarchy] = useState(false);
+  const [newSectionScope, setNewSectionScope] = useState<{
+    governorate_id: string;
+    center_id: string;
+    area_id: string;
+    is_active: boolean;
+  }>({
+    governorate_id: '',
+    center_id: '',
+    area_id: '',
+    is_active: true,
+  });
+  const [isSavingSectionArea, setIsSavingSectionArea] = useState(false);
+
   // =========================================================================
   // DATA LOADERS
   // =========================================================================
@@ -329,15 +349,20 @@ export const AdminRestaurantManagement: React.FC = () => {
 
   const loadSettingsAndHistory = useCallback(async () => {
     setIsLoading(true);
-    const [secRes, ownRes] = await Promise.all([
+    setIsLoadingSectionAreas(true);
+    const [secRes, ownRes, areasRes] = await Promise.all([
       restaurantAdminService.getSectionSettings(),
       restaurantAdminService.getOwnershipHistory(selectedRestaurantFilter),
+      restaurantAdminService.getSectionServiceAreas(),
     ]);
     if (secRes.error) showToast(secRes.error, 'error');
     if (ownRes.error) showToast(ownRes.error, 'error');
+    if (areasRes.error) showToast(areasRes.error, 'error');
     setSectionSettings(secRes.settings || null);
     setOwnershipHistory(ownRes.history || []);
+    setSectionServiceAreas(areasRes.sectionAreas || []);
     setIsLoading(false);
+    setIsLoadingSectionAreas(false);
   }, [selectedRestaurantFilter, showToast]);
 
   // Main Effect to route active tab loading
@@ -384,7 +409,7 @@ export const AdminRestaurantManagement: React.FC = () => {
       max_delivery_radius_km: 15,
       commission_percent: 10,
       delivery_fee: 15,
-      food_money_settlement_mode: 'cash_on_delivery',
+      food_money_settlement_mode: 'per_order',
       category_ids: [],
     });
     setIsRestaurantModalOpen(true);
@@ -406,9 +431,9 @@ export const AdminRestaurantManagement: React.FC = () => {
 
     const safeSettlementMode =
       rest.food_money_settlement_mode &&
-      ['cash_on_delivery', 'online_direct', 'wallet'].includes(rest.food_money_settlement_mode)
+      ['per_order', 'daily', 'weekly', 'monthly'].includes(rest.food_money_settlement_mode)
         ? rest.food_money_settlement_mode
-        : 'cash_on_delivery';
+        : 'per_order';
 
     setEditingRestaurant({
       ...rest,
@@ -660,6 +685,123 @@ export const AdminRestaurantManagement: React.FC = () => {
       }
     } else {
       showToast(res.error || 'تعذر إزالة المنطقة', 'error');
+    }
+  };
+
+  // =========================================================================
+  // SECTION GEOGRAPHIC SERVICE AREAS HANDLERS (public.restaurant_section_service_areas)
+  // =========================================================================
+  const handleSectionGovChange = async (govId: string) => {
+    setNewSectionScope({
+      governorate_id: govId,
+      center_id: '',
+      area_id: '',
+      is_active: true,
+    });
+    setSectionAreaAreas([]);
+    if (govId) {
+      setIsLoadingSectionHierarchy(true);
+      const res = await restaurantAdminService.getFoodCenters(govId);
+      setSectionAreaCenters(res.centers || []);
+      setIsLoadingSectionHierarchy(false);
+    } else {
+      setSectionAreaCenters([]);
+    }
+  };
+
+  const handleSectionCenterChange = async (centerId: string) => {
+    setNewSectionScope((prev) => ({
+      ...prev,
+      center_id: centerId,
+      area_id: '',
+    }));
+    if (centerId && newSectionScope.governorate_id) {
+      setIsLoadingSectionHierarchy(true);
+      const res = await restaurantAdminService.getFoodAreas(centerId, newSectionScope.governorate_id);
+      setSectionAreaAreas(res.areas || []);
+      setIsLoadingSectionHierarchy(false);
+    } else {
+      setSectionAreaAreas([]);
+    }
+  };
+
+  const handleAddSectionServiceArea = async () => {
+    if (!hasPermission('restaurants.manage')) {
+      showToast('ليس لديك صلاحية لتعديل نطاقات تشغيل القسم', 'error');
+      return;
+    }
+    if (!newSectionScope.governorate_id) {
+      showToast('يرجى اختيار المحافظة على الأقل لتحديد نطاق التشغيل', 'warning');
+      return;
+    }
+
+    // Client-side deduplication check
+    const isDup = sectionServiceAreas.some((sa) => {
+      const matchGov = sa.governorate_id === newSectionScope.governorate_id;
+      const matchCenter = (sa.center_id || null) === (newSectionScope.center_id || null);
+      const matchArea = (sa.area_id || null) === (newSectionScope.area_id || null);
+      return matchGov && matchCenter && matchArea;
+    });
+
+    if (isDup) {
+      showToast('هذا النطاق الجغرافي مضاف بالفعل في قائمة نطاقات تشغيل القسم', 'warning');
+      return;
+    }
+
+    setIsSavingSectionArea(true);
+    const res = await restaurantAdminService.createSectionServiceArea({
+      governorate_id: newSectionScope.governorate_id,
+      center_id: newSectionScope.center_id || null,
+      area_id: newSectionScope.area_id || null,
+      is_active: newSectionScope.is_active,
+    });
+    setIsSavingSectionArea(false);
+
+    if (res.success) {
+      showToast('تمت إضافة النطاق الجغرافي لقسم المطاعم بنجاح', 'success');
+      // Reset center and area, keep governorate for ease of adding more
+      setNewSectionScope((prev) => ({
+        ...prev,
+        center_id: '',
+        area_id: '',
+      }));
+      setSectionAreaAreas([]);
+      // Reload section areas
+      const reloadRes = await restaurantAdminService.getSectionServiceAreas();
+      setSectionServiceAreas(reloadRes.sectionAreas || []);
+    } else {
+      showToast(res.error || 'فشل إضافة النطاق الجغرافي', 'error');
+    }
+  };
+
+  const handleToggleSectionAreaActive = async (item: RestaurantSectionServiceArea) => {
+    if (!hasPermission('restaurants.manage')) {
+      showToast('ليس لديك صلاحية لتعديل نطاقات القسم', 'error');
+      return;
+    }
+    const nextStatus = !item.is_active;
+    const res = await restaurantAdminService.toggleSectionServiceArea(item.id, nextStatus);
+    if (res.success) {
+      showToast(nextStatus ? 'تم تفعيل النطاق الجغرافي' : 'تم تعطيل النطاق الجغرافي', 'success');
+      setSectionServiceAreas((prev) =>
+        prev.map((a) => (a.id === item.id ? { ...a, is_active: nextStatus } : a))
+      );
+    } else {
+      showToast(res.error || 'تعذر تغيير حالة النطاق', 'error');
+    }
+  };
+
+  const handleDeleteSectionArea = async (item: RestaurantSectionServiceArea) => {
+    if (!hasPermission('restaurants.manage')) {
+      showToast('ليس لديك صلاحية لحذف نطاقات القسم', 'error');
+      return;
+    }
+    const res = await restaurantAdminService.deleteSectionServiceArea(item.id);
+    if (res.success) {
+      showToast('تم حذف النطاق الجغرافي من نطاقات عمل القسم', 'success');
+      setSectionServiceAreas((prev) => prev.filter((a) => a.id !== item.id));
+    } else {
+      showToast(res.error || 'تعذر حذف النطاق', 'error');
     }
   };
 
@@ -2188,123 +2330,494 @@ export const AdminRestaurantManagement: React.FC = () => {
                 لم يتم العثور على سجل إعدادات القسم الحالي في جدول restaurant_section_settings.
               </div>
             ) : (
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                <div className="p-4 rounded-2xl bg-slate-950/60 border border-slate-800 space-y-2">
-                  <div className="text-xs text-slate-400 font-bold">تفعيل القسم كاملاً</div>
-                  <div className="flex items-center gap-3">
-                    <button
-                      type="button"
-                      disabled={isSaving}
-                      onClick={async () => {
-                        if (!hasPermission('restaurants.manage')) {
-                          showToast('ليس لديك صلاحية لتعديل إعدادات القسم', 'error');
-                          return;
+              <div className="space-y-4">
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                  {/* Setting 1: Section Enabled */}
+                  <div className="p-4 rounded-2xl bg-slate-950/60 border border-slate-800 space-y-2">
+                    <div className="text-xs text-slate-400 font-bold">1. حالة تشغيل قسم المطاعم</div>
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-xs text-slate-300 font-medium">
+                        {sectionSettings.section_enabled ? 'مفعل ومتاح حالياً' : 'معطل مؤقتاً'}
+                      </span>
+                      <button
+                        type="button"
+                        disabled={isSaving}
+                        onClick={async () => {
+                          if (!hasPermission('restaurants.manage')) {
+                            showToast('ليس لديك صلاحية لتعديل إعدادات القسم', 'error');
+                            return;
+                          }
+                          setIsSaving(true);
+                          const next = !sectionSettings.section_enabled;
+                          const res = await restaurantAdminService.updateSectionSettings(sectionSettings.id, {
+                            section_enabled: next,
+                          });
+                          setIsSaving(false);
+                          if (res.success && res.settings) {
+                            setSectionSettings(res.settings);
+                            showToast(next ? 'تم تفعيل قسم المطاعم بنجاح' : 'تم تعطيل قسم المطاعم مؤقتاً', 'success');
+                          } else {
+                            showToast(res.error || 'تعذر حفظ الإعداد', 'error');
+                          }
+                        }}
+                        className={`px-3 py-1.5 rounded-xl text-xs font-bold cursor-pointer transition ${
+                          sectionSettings.section_enabled
+                            ? 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-sm'
+                            : 'bg-rose-600 hover:bg-rose-500 text-white shadow-sm'
+                        }`}
+                      >
+                        {sectionSettings.section_enabled ? 'تعطيل القسم' : 'تفعيل القسم'}
+                      </button>
+                    </div>
+                    <p className="text-[10px] text-slate-500">
+                      يتحكم في إمكانية استقبال وإرسال طلبات الطعام الجديدة من العملاء.
+                    </p>
+                  </div>
+
+                  {/* Setting 2: Section Visibility */}
+                  <div className="p-4 rounded-2xl bg-slate-950/60 border border-slate-800 space-y-2">
+                    <div className="text-xs text-slate-400 font-bold">2. رؤية القسم في التطبيق (section_visibility)</div>
+                    <div className="flex items-center gap-2">
+                      <select
+                        value={sectionSettings.section_visibility || 'visible'}
+                        onChange={(e) =>
+                          setSectionSettings({
+                            ...sectionSettings,
+                            section_visibility: e.target.value as any,
+                          })
                         }
-                        setIsSaving(true);
-                        const res = await restaurantAdminService.updateSectionSettings(sectionSettings.id, {
-                          section_enabled: !sectionSettings.section_enabled,
-                        });
-                        setIsSaving(false);
-                        if (res.success && res.settings) {
-                          setSectionSettings(res.settings);
-                          showToast('تم تحديث حالة تفعيل القسم بنجاح', 'success');
-                        } else {
-                          showToast(res.error || 'تعذر حفظ الإعداد', 'error');
+                        className="flex-1 bg-slate-900 border border-slate-700 rounded-xl px-2.5 py-1.5 text-xs text-white outline-none focus:border-amber-500"
+                      >
+                        <option value="visible">مرئي للجميع (visible)</option>
+                        <option value="hidden">مخفي بالكامل (hidden)</option>
+                      </select>
+                      <button
+                        type="button"
+                        disabled={isSaving}
+                        onClick={async () => {
+                          if (!hasPermission('restaurants.manage')) {
+                            showToast('ليس لديك صلاحية لتعديل إعدادات القسم', 'error');
+                            return;
+                          }
+                          setIsSaving(true);
+                          const res = await restaurantAdminService.updateSectionSettings(sectionSettings.id, {
+                            section_visibility: sectionSettings.section_visibility || 'visible',
+                          });
+                          setIsSaving(false);
+                          if (res.success && res.settings) {
+                            setSectionSettings(res.settings);
+                            showToast('تم حفظ إعداد ظهور القسم بنجاح', 'success');
+                          } else {
+                            showToast(res.error || 'تعذر الحفظ', 'error');
+                          }
+                        }}
+                        className="px-3 py-1.5 rounded-xl bg-amber-500 text-slate-950 font-bold text-xs cursor-pointer hover:bg-amber-400 transition"
+                      >
+                        حفظ
+                      </button>
+                    </div>
+                    <p className="text-[10px] text-slate-500">
+                      تحديد ما إذا كان قسم المطاعم يظهر في واجهة مستخدمي التطبيق أو يتم إخفاؤه تماماً.
+                    </p>
+                  </div>
+
+                  {/* Setting 3: Disabled Display Mode */}
+                  <div className="p-4 rounded-2xl bg-slate-950/60 border border-slate-800 space-y-2">
+                    <div className="text-xs text-slate-400 font-bold">3. العرض عند التعطيل (disabled_display_mode)</div>
+                    <div className="flex items-center gap-2">
+                      <select
+                        value={sectionSettings.disabled_display_mode || 'show_disabled'}
+                        onChange={(e) =>
+                          setSectionSettings({
+                            ...sectionSettings,
+                            disabled_display_mode: e.target.value as any,
+                          })
                         }
-                      }}
-                      className={`px-4 py-2 rounded-xl text-xs font-bold cursor-pointer ${
-                        sectionSettings.section_enabled
-                          ? 'bg-emerald-600 text-white'
-                          : 'bg-rose-600 text-white'
-                      }`}
-                    >
-                      {sectionSettings.section_enabled ? 'مفعل للمستخدمين' : 'معطل مؤقتاً'}
-                    </button>
+                        className="flex-1 bg-slate-900 border border-slate-700 rounded-xl px-2.5 py-1.5 text-xs text-white outline-none focus:border-amber-500"
+                      >
+                        <option value="show_disabled">إظهار كمعطل مع تنبيه (show_disabled)</option>
+                        <option value="hide">إخفاء القسم تلقائياً (hide)</option>
+                      </select>
+                      <button
+                        type="button"
+                        disabled={isSaving}
+                        onClick={async () => {
+                          if (!hasPermission('restaurants.manage')) {
+                            showToast('ليس لديك صلاحية لتعديل إعدادات القسم', 'error');
+                            return;
+                          }
+                          setIsSaving(true);
+                          const res = await restaurantAdminService.updateSectionSettings(sectionSettings.id, {
+                            disabled_display_mode: sectionSettings.disabled_display_mode || 'show_disabled',
+                          });
+                          setIsSaving(false);
+                          if (res.success && res.settings) {
+                            setSectionSettings(res.settings);
+                            showToast('تم حفظ طريقة العرض عند التعطيل بنجاح', 'success');
+                          } else {
+                            showToast(res.error || 'تعذر الحفظ', 'error');
+                          }
+                        }}
+                        className="px-3 py-1.5 rounded-xl bg-amber-500 text-slate-950 font-bold text-xs cursor-pointer hover:bg-amber-400 transition"
+                      >
+                        حفظ
+                      </button>
+                    </div>
+                    <p className="text-[10px] text-slate-500">
+                      سلوك الواجهة عندما يكون القسم معطلاً: إما يظهر للمستخدم كغير متاح أو يختفي كلياً.
+                    </p>
+                  </div>
+
+                  {/* Setting 4: Global Max Delivery Radius */}
+                  <div className="p-4 rounded-2xl bg-slate-950/60 border border-slate-800 space-y-2">
+                    <div className="text-xs text-slate-400 font-bold">4. نطاق التوصيل الأقصى للقسم</div>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="number"
+                        min="1"
+                        value={toInputNumber(sectionSettings.global_max_delivery_radius_km, 25)}
+                        onChange={(e) => {
+                          const v = e.target.value.trim();
+                          setSectionSettings({
+                            ...sectionSettings,
+                            global_max_delivery_radius_km: v === '' ? 25 : (isNaN(Number(v)) ? 25 : Number(v)),
+                          });
+                        }}
+                        className="w-24 bg-slate-900 border border-slate-700 rounded-xl px-3 py-1.5 text-xs text-white font-mono"
+                      />
+                      <span className="text-xs text-slate-400">كم</span>
+                      <button
+                        type="button"
+                        disabled={isSaving}
+                        onClick={async () => {
+                          if (!hasPermission('restaurants.manage')) {
+                            showToast('ليس لديك صلاحية لتعديل إعدادات القسم', 'error');
+                            return;
+                          }
+                          setIsSaving(true);
+                          const res = await restaurantAdminService.updateSectionSettings(sectionSettings.id, {
+                            global_max_delivery_radius_km: sectionSettings.global_max_delivery_radius_km,
+                          });
+                          setIsSaving(false);
+                          if (res.success && res.settings) {
+                            setSectionSettings(res.settings);
+                            showToast('تم حفظ نطاق التوصيل الأقصى', 'success');
+                          } else {
+                            showToast(res.error || 'تعذر الحفظ', 'error');
+                          }
+                        }}
+                        className="px-3 py-1.5 rounded-xl bg-amber-500 text-slate-950 font-bold text-xs cursor-pointer hover:bg-amber-400 transition"
+                      >
+                        حفظ
+                      </button>
+                    </div>
+                    <p className="text-[10px] text-slate-500">
+                      الحد الأقصى المطلق لنطاق التوصيل المسموح به لأي مطعم على المنصة.
+                    </p>
+                  </div>
+
+                  {/* Setting 5: No Driver Timeout */}
+                  <div className="p-4 rounded-2xl bg-slate-950/60 border border-slate-800 space-y-2">
+                    <div className="text-xs text-slate-400 font-bold">5. مهلة انتظار السائق قبل الإلغاء</div>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="number"
+                        min="1"
+                        value={toInputNumber(sectionSettings.no_driver_timeout_minutes, 10)}
+                        onChange={(e) => {
+                          const v = e.target.value.trim();
+                          setSectionSettings({
+                            ...sectionSettings,
+                            no_driver_timeout_minutes: v === '' ? 10 : (isNaN(Number(v)) ? 10 : Number(v)),
+                          });
+                        }}
+                        className="w-24 bg-slate-900 border border-slate-700 rounded-xl px-3 py-1.5 text-xs text-white font-mono"
+                      />
+                      <span className="text-xs text-slate-400">دقيقة</span>
+                      <button
+                        type="button"
+                        disabled={isSaving}
+                        onClick={async () => {
+                          if (!hasPermission('restaurants.manage')) {
+                            showToast('ليس لديك صلاحية لتعديل إعدادات القسم', 'error');
+                            return;
+                          }
+                          setIsSaving(true);
+                          const res = await restaurantAdminService.updateSectionSettings(sectionSettings.id, {
+                            no_driver_timeout_minutes: sectionSettings.no_driver_timeout_minutes,
+                          });
+                          setIsSaving(false);
+                          if (res.success && res.settings) {
+                            setSectionSettings(res.settings);
+                            showToast('تم حفظ مهلة انتظار السائق', 'success');
+                          } else {
+                            showToast(res.error || 'تعذر الحفظ', 'error');
+                          }
+                        }}
+                        className="px-3 py-1.5 rounded-xl bg-amber-500 text-slate-950 font-bold text-xs cursor-pointer hover:bg-amber-400 transition"
+                      >
+                        حفظ
+                      </button>
+                    </div>
+                    <p className="text-[10px] text-slate-500">
+                      الوقت المسموح به للعثور على مندوب توصيل قبل تحويل الطلب لحالة الإلغاء التلقائي.
+                    </p>
                   </div>
                 </div>
+              </div>
+            )}
+          </div>
 
-                <div className="p-4 rounded-2xl bg-slate-950/60 border border-slate-800 space-y-2">
-                  <div className="text-xs text-slate-400 font-bold">نطاق التوصيل العام الأقصى</div>
-                  <div className="flex items-center gap-2">
-                    <input
-                      type="number"
-                      value={toInputNumber(sectionSettings.global_max_delivery_radius_km, 25)}
-                      onChange={(e) => {
-                        const v = e.target.value.trim();
-                        setSectionSettings({
-                          ...sectionSettings,
-                          global_max_delivery_radius_km: v === '' ? 25 : (isNaN(Number(v)) ? 25 : Number(v)),
-                        });
-                      }}
-                      className="w-24 bg-slate-900 border border-slate-700 rounded-xl px-3 py-1.5 text-xs text-white"
-                    />
-                    <span className="text-xs text-slate-400">كيلومتر</span>
-                    <button
-                      type="button"
-                      disabled={isSaving}
-                      onClick={async () => {
-                        if (!hasPermission('restaurants.manage')) {
-                          showToast('ليس لديك صلاحية لتعديل إعدادات القسم', 'error');
-                          return;
-                        }
-                        setIsSaving(true);
-                        const res = await restaurantAdminService.updateSectionSettings(sectionSettings.id, {
-                          global_max_delivery_radius_km: sectionSettings.global_max_delivery_radius_km,
-                        });
-                        setIsSaving(false);
-                        if (res.success) {
-                          showToast('تم حفظ نطاق التوصيل', 'success');
-                        } else {
-                          showToast(res.error || 'تعذر الحفظ', 'error');
-                        }
-                      }}
-                      className="px-3 py-1.5 rounded-xl bg-amber-500 text-slate-950 font-bold text-xs cursor-pointer"
-                    >
-                      حفظ
-                    </button>
-                  </div>
+          {/* ===================================================================
+              SECTION GEOGRAPHIC SERVICE AREAS (public.restaurant_section_service_areas)
+              =================================================================== */}
+          <div className="bg-slate-900/80 border border-slate-800 rounded-3xl p-5 space-y-5">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-800 pb-3">
+              <div>
+                <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                  <MapPin className="w-4 h-4 text-emerald-400" />
+                  <span>إدارة نطاقات التشغيل الجغرافية لقسم المطاعم</span>
+                  <span className="text-[11px] px-2.5 py-0.5 rounded-full font-bold bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
+                    {sectionServiceAreas.length} نطاق مسجل
+                  </span>
+                </h3>
+                <p className="text-xs text-slate-400 mt-1">
+                  تحديد المحافظات والمراكز والمناطق التي يغطيها قسم المطاعم بالكامل وفق جدول (restaurant_section_service_areas)
+                </p>
+              </div>
+
+              <button
+                type="button"
+                onClick={async () => {
+                  setIsLoadingSectionAreas(true);
+                  const res = await restaurantAdminService.getSectionServiceAreas();
+                  if (res.sectionAreas) setSectionServiceAreas(res.sectionAreas);
+                  setIsLoadingSectionAreas(false);
+                  showToast('تم تحديث قائمة نطاقات تشغيل القسم', 'info');
+                }}
+                className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold flex items-center gap-1.5 border border-slate-700 cursor-pointer self-start sm:self-center"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${isLoadingSectionAreas ? 'animate-spin' : ''}`} />
+                <span>تحديث النطاقات</span>
+              </button>
+            </div>
+
+            {/* Scope Addition Form */}
+            <div className="p-4 rounded-2xl bg-slate-950/70 border border-slate-800 space-y-3">
+              <div className="text-xs font-bold text-slate-200 flex items-center justify-between">
+                <span className="flex items-center gap-1.5">
+                  <Plus className="w-4 h-4 text-amber-400" />
+                  <span>إضافة نطاق جغرافي جديد لتشغيل القسم</span>
+                </span>
+                {isLoadingSectionHierarchy && (
+                  <span className="text-[11px] text-amber-400 flex items-center gap-1">
+                    <RefreshCw className="w-3 h-3 animate-spin" />
+                    <span>جاري تحميل الهيكل الجغرافي...</span>
+                  </span>
+                )}
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                {/* 1. Governorate */}
+                <div>
+                  <label className="block text-slate-400 font-bold mb-1 text-xs">1. المحافظة *</label>
+                  <select
+                    value={newSectionScope.governorate_id}
+                    onChange={(e) => handleSectionGovChange(e.target.value)}
+                    className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-white outline-none focus:border-amber-500 text-xs"
+                  >
+                    <option value="">اختر المحافظة...</option>
+                    {governorates
+                      .filter((g) => g.is_active)
+                      .map((g) => (
+                        <option key={g.id} value={g.id}>
+                          {g.name_ar}
+                        </option>
+                      ))}
+                  </select>
                 </div>
 
-                <div className="p-4 rounded-2xl bg-slate-950/60 border border-slate-800 space-y-2">
-                  <div className="text-xs text-slate-400 font-bold">مهلة انتظار السائق قبل الإلغاء</div>
-                  <div className="flex items-center gap-2">
-                    <input
-                      type="number"
-                      value={toInputNumber(sectionSettings.no_driver_timeout_minutes, 10)}
-                      onChange={(e) => {
-                        const v = e.target.value.trim();
-                        setSectionSettings({
-                          ...sectionSettings,
-                          no_driver_timeout_minutes: v === '' ? 10 : (isNaN(Number(v)) ? 10 : Number(v)),
-                        });
-                      }}
-                      className="w-24 bg-slate-900 border border-slate-700 rounded-xl px-3 py-1.5 text-xs text-white"
-                    />
-                    <span className="text-xs text-slate-400">دقيقة</span>
-                    <button
-                      type="button"
-                      disabled={isSaving}
-                      onClick={async () => {
-                        if (!hasPermission('restaurants.manage')) {
-                          showToast('ليس لديك صلاحية لتعديل إعدادات القسم', 'error');
-                          return;
-                        }
-                        setIsSaving(true);
-                        const res = await restaurantAdminService.updateSectionSettings(sectionSettings.id, {
-                          no_driver_timeout_minutes: sectionSettings.no_driver_timeout_minutes,
-                        });
-                        setIsSaving(false);
-                        if (res.success) {
-                          showToast('تم حفظ مهلة السائق', 'success');
-                        } else {
-                          showToast(res.error || 'تعذر الحفظ', 'error');
-                        }
-                      }}
-                      className="px-3 py-1.5 rounded-xl bg-amber-500 text-slate-950 font-bold text-xs cursor-pointer"
-                    >
-                      حفظ
-                    </button>
-                  </div>
+                {/* 2. Center (Optional for Governorate-wide scope) */}
+                <div>
+                  <label className="block text-slate-400 font-bold mb-1 text-xs">
+                    2. المركز / القسم (اختياري)
+                  </label>
+                  <select
+                    value={newSectionScope.center_id}
+                    onChange={(e) => handleSectionCenterChange(e.target.value)}
+                    disabled={!newSectionScope.governorate_id || sectionAreaCenters.length === 0}
+                    className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-white outline-none focus:border-amber-500 text-xs disabled:opacity-50"
+                  >
+                    <option value="">كامل المحافظة (بدون تحديد مركز)</option>
+                    {sectionAreaCenters
+                      .filter((c) => c.is_active)
+                      .map((c) => (
+                        <option key={c.id} value={c.id}>
+                          {c.name_ar}
+                        </option>
+                      ))}
+                  </select>
+                </div>
+
+                {/* 3. Area (Optional for Center-wide scope) */}
+                <div>
+                  <label className="block text-slate-400 font-bold mb-1 text-xs">
+                    3. المنطقة / الحي (اختياري)
+                  </label>
+                  <select
+                    value={newSectionScope.area_id}
+                    onChange={(e) => setNewSectionScope((prev) => ({ ...prev, area_id: e.target.value }))}
+                    disabled={!newSectionScope.center_id || sectionAreaAreas.length === 0}
+                    className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-white outline-none focus:border-amber-500 text-xs disabled:opacity-50"
+                  >
+                    <option value="">كامل المركز (بدون تحديد منطقة)</option>
+                    {sectionAreaAreas
+                      .filter((a) => a.is_active)
+                      .map((a) => (
+                        <option key={a.id} value={a.id}>
+                          {a.name_ar}
+                        </option>
+                      ))}
+                  </select>
+                </div>
+              </div>
+
+              {/* Scope Level Helper & Action Button */}
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-2 border-t border-slate-800/80">
+                <div className="text-xs">
+                  <span className="text-slate-400">مستوى النطاق المحدد: </span>
+                  {newSectionScope.area_id ? (
+                    <span className="font-bold text-emerald-400">منطقة محددة (أدق مستوى)</span>
+                  ) : newSectionScope.center_id ? (
+                    <span className="font-bold text-amber-400">مركز / قسم بالكامل</span>
+                  ) : newSectionScope.governorate_id ? (
+                    <span className="font-bold text-blue-400">محافظة كاملة بجميع مراكزها ومناطقها</span>
+                  ) : (
+                    <span className="text-slate-500">يرجى اختيار المحافظة</span>
+                  )}
+                </div>
+
+                <button
+                  type="button"
+                  disabled={!newSectionScope.governorate_id || isSavingSectionArea}
+                  onClick={handleAddSectionServiceArea}
+                  className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-bold text-xs flex items-center justify-center gap-2 cursor-pointer transition shadow-md shadow-emerald-950/20"
+                >
+                  {isSavingSectionArea ? (
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                  ) : (
+                    <Plus className="w-3.5 h-3.5" />
+                  )}
+                  <span>إضافة نطاق تشغيل للقسم</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Registered Section Scopes List */}
+            {isLoadingSectionAreas ? (
+              <div className="p-8 text-center text-xs text-slate-400 flex items-center justify-center gap-2">
+                <RefreshCw className="w-4 h-4 animate-spin text-amber-400" />
+                <span>جاري تحميل نطاقات التشغيل...</span>
+              </div>
+            ) : sectionServiceAreas.length === 0 ? (
+              <div className="p-8 text-center text-xs text-slate-500 bg-slate-950/40 rounded-2xl border border-slate-800/60">
+                لا توجد نطاقات جغرافية مسجلة حالياً لقسم المطاعم في جدول restaurant_section_service_areas.
+                <div className="text-[11px] text-slate-400 mt-1">
+                  قم بإضافة محافظة أو مركز أو منطقة أعلاه لتحديد النطاق الجغرافي الذي يقدم فيه القسم خدماته.
+                </div>
+              </div>
+            ) : (
+              <div className="bg-slate-950/80 border border-slate-800 rounded-2xl overflow-hidden">
+                <div className="overflow-x-auto">
+                  <table className="w-full text-right text-xs">
+                    <thead className="bg-slate-900/90 text-slate-400 font-bold border-b border-slate-800">
+                      <tr>
+                        <th className="py-3 px-4">النطاق الجغرافي</th>
+                        <th className="py-3 px-4">مستوى النطاق</th>
+                        <th className="py-3 px-4">الحالة التشغيلية</th>
+                        <th className="py-3 px-4">تاريخ الإضافة</th>
+                        <th className="py-3 px-4 text-center">الإجراءات</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-800/80">
+                      {sectionServiceAreas.map((area) => (
+                        <tr key={area.id} className="hover:bg-slate-900/40 transition">
+                          <td className="py-3 px-4">
+                            <div className="flex items-center gap-2 font-bold text-white">
+                              <MapPin className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                              <span>
+                                {area.level === 'area' ? (
+                                  <>
+                                    <span className="text-slate-400">{area.governorate_name_ar}</span>
+                                    <span className="text-slate-600 mx-1">›</span>
+                                    <span className="text-slate-300">{area.center_name_ar}</span>
+                                    <span className="text-slate-600 mx-1">›</span>
+                                    <span className="text-emerald-400 font-black">{area.area_name_ar}</span>
+                                  </>
+                                ) : area.level === 'center' ? (
+                                  <>
+                                    <span className="text-slate-400">{area.governorate_name_ar}</span>
+                                    <span className="text-slate-600 mx-1">›</span>
+                                    <span className="text-amber-300 font-black">مركز {area.center_name_ar} (كامل المركز)</span>
+                                  </>
+                                ) : (
+                                  <span className="text-blue-300 font-black">
+                                    محافظة {area.governorate_name_ar} (كامل نطاق المحافظة)
+                                  </span>
+                                )}
+                              </span>
+                            </div>
+                          </td>
+
+                          <td className="py-3 px-4">
+                            {area.level === 'area' ? (
+                              <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
+                                منطقة محددة
+                              </span>
+                            ) : area.level === 'center' ? (
+                              <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/15 text-amber-300 border border-amber-500/30">
+                                مركز / قسم كامل
+                              </span>
+                            ) : (
+                              <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-blue-500/15 text-blue-300 border border-blue-500/30">
+                                محافظة كاملة
+                              </span>
+                            )}
+                          </td>
+
+                          <td className="py-3 px-4">
+                            <button
+                              type="button"
+                              onClick={() => handleToggleSectionAreaActive(area)}
+                              className={`px-2.5 py-1 rounded-xl text-[11px] font-bold cursor-pointer transition flex items-center gap-1.5 ${
+                                area.is_active
+                                  ? 'bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/25 border border-emerald-500/30'
+                                  : 'bg-rose-500/15 text-rose-300 hover:bg-rose-500/25 border border-rose-500/30'
+                              }`}
+                            >
+                              <span className={`w-1.5 h-1.5 rounded-full ${area.is_active ? 'bg-emerald-400' : 'bg-rose-400'}`} />
+                              <span>{area.is_active ? 'نطاق نشط ومفعل' : 'معطل مؤقتاً'}</span>
+                            </button>
+                          </td>
+
+                          <td className="py-3 px-4 text-slate-400 font-mono text-[11px]">
+                            {formatDate(area.created_at)}
+                          </td>
+
+                          <td className="py-3 px-4 text-center">
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteSectionArea(area)}
+                              title="حذف هذا النطاق من قسم المطاعم"
+                              className="p-1.5 rounded-xl bg-slate-900 hover:bg-rose-950/60 text-slate-400 hover:text-rose-300 border border-slate-800 hover:border-rose-800 transition cursor-pointer"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
                 </div>
               </div>
             )}
@@ -2898,7 +3411,7 @@ export const AdminRestaurantManagement: React.FC = () => {
                   <span>الإعدادات المالية ونطاق التوصيل الأساسي</span>
                 </div>
 
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <div>
                     <label className="block text-slate-400 font-bold mb-1">نسبة العمولة %</label>
                     <input
@@ -2917,23 +3430,7 @@ export const AdminRestaurantManagement: React.FC = () => {
                     />
                   </div>
                   <div>
-                    <label className="block text-slate-400 font-bold mb-1">نطاق التوصيل الأساسي (كم)</label>
-                    <input
-                      type="number"
-                      min="1"
-                      value={toInputNumber(editingRestaurant.max_delivery_radius_km, 15)}
-                      onChange={(e) => {
-                        const v = e.target.value.trim();
-                        setEditingRestaurant({
-                          ...editingRestaurant,
-                          max_delivery_radius_km: v === '' ? undefined : (isNaN(Number(v)) ? 15 : parseFloat(v)),
-                        });
-                      }}
-                      className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white outline-none focus:border-amber-500 font-mono"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-slate-400 font-bold mb-1">رسوم التوصيل الافتراضية (ج.م)</label>
+                    <label className="block text-slate-400 font-bold mb-1">رسوم التوصيل الأساسية للمطعم (ج.م)</label>
                     <input
                       type="number"
                       min="0"
@@ -2951,9 +3448,11 @@ export const AdminRestaurantManagement: React.FC = () => {
                 </div>
 
                 <div>
-                  <label className="block text-slate-400 font-bold mb-1">طريقة التسوية المالية (حسب قيد النظام المعتمد)</label>
+                  <label className="block text-slate-400 font-bold mb-1">
+                    طريقة تسوية أموال الطعام (food_money_settlement_mode) *
+                  </label>
                   <select
-                    value={editingRestaurant.food_money_settlement_mode || 'cash_on_delivery'}
+                    value={editingRestaurant.food_money_settlement_mode || 'per_order'}
                     onChange={(e) =>
                       setEditingRestaurant({
                         ...editingRestaurant,
@@ -2962,10 +3461,14 @@ export const AdminRestaurantManagement: React.FC = () => {
                     }
                     className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white outline-none focus:border-amber-500 text-xs"
                   >
-                    <option value="cash_on_delivery">تحصيل كاش عند التسليم (COD)</option>
-                    <option value="online_direct">دفع إلكتروني مباشر (Online Payment)</option>
-                    <option value="wallet">محفظة المطعم الرقمية (Digital Wallet)</option>
+                    <option value="per_order">تسوية مع كل طلب (Per Order)</option>
+                    <option value="daily">تسوية يومية (Daily)</option>
+                    <option value="weekly">تسوية أسبوعية (Weekly)</option>
+                    <option value="monthly">تسوية شهرية (Monthly)</option>
                   </select>
+                  <p className="text-[10px] text-slate-500 mt-1">
+                    تحدد دورة تحويل مستحقات المطعم المالية وفق قيد قاعدة البيانات المعتمد (restaurants_food_money_settlement_mode_check).
+                  </p>
                 </div>
               </div>
             </div>
