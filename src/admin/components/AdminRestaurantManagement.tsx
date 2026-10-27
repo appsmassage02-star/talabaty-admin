@@ -228,6 +228,15 @@ export const AdminRestaurantManagement: React.FC = () => {
   });
   const [isSavingSectionArea, setIsSavingSectionArea] = useState(false);
 
+  // Dedicated Independent Restaurant Commission Quick-Edit State
+  const [editingCommissionRestaurant, setEditingCommissionRestaurant] = useState<{
+    id: string;
+    name: string;
+    commission_percent: number;
+  } | null>(null);
+  const [commissionInputValue, setCommissionInputValue] = useState<number | string>(10);
+  const [isSavingCommission, setIsSavingCommission] = useState(false);
+
   // =========================================================================
   // DATA LOADERS
   // =========================================================================
@@ -805,6 +814,34 @@ export const AdminRestaurantManagement: React.FC = () => {
     }
   };
 
+  const handleSaveQuickCommission = async () => {
+    if (!hasPermission('restaurants.manage')) {
+      showToast('ليس لديك صلاحية لتعديل عمولة المطعم', 'error');
+      return;
+    }
+    if (!editingCommissionRestaurant) return;
+    const num = Number(commissionInputValue);
+    if (isNaN(num) || num < 0 || num > 100) {
+      showToast('يرجى إدخال نسبة عمولة صحيحة بين 0% و 100%', 'error');
+      return;
+    }
+    setIsSavingCommission(true);
+    const res = await restaurantAdminService.updateRestaurant(editingCommissionRestaurant.id, {
+      commission_percent: num,
+    });
+    setIsSavingCommission(false);
+    if (res.success) {
+      showToast(`تم تحديث عمولة مطعم "${editingCommissionRestaurant.name}" إلى ${num}% بنجاح`, 'success');
+      const updatedId = editingCommissionRestaurant.id;
+      setEditingCommissionRestaurant(null);
+      setRestaurants((prev) =>
+        prev.map((r) => (r.id === updatedId ? { ...r, commission_percent: num } : r))
+      );
+    } else {
+      showToast(res.error || 'تعذر تحديث نسبة العمولة', 'error');
+    }
+  };
+
   useEffect(() => {
     switch (currentTab) {
       case 'restaurant_overview':
@@ -1189,7 +1226,7 @@ export const AdminRestaurantManagement: React.FC = () => {
                             : 'bg-rose-500/15 text-rose-300 border-rose-500/30'
                         }`}
                       >
-                        {rest.is_active ? 'نشط' : 'معطل'}
+                        {rest.is_active ? 'نشط إدارياً' : 'معطل إدارياً'}
                       </span>
                       <span
                         className={`px-2 py-0.5 rounded-lg text-[10px] font-bold border ${
@@ -1198,7 +1235,7 @@ export const AdminRestaurantManagement: React.FC = () => {
                             : 'bg-slate-800 text-slate-400 border-slate-700'
                         }`}
                       >
-                        {rest.is_open ? 'مفتوح' : 'مغلق'}
+                        {rest.is_open ? 'مفتوح للطلبات' : 'مغلق مؤقتاً'}
                       </span>
                     </div>
                   </div>
@@ -1233,25 +1270,61 @@ export const AdminRestaurantManagement: React.FC = () => {
                   )}
 
                   <div className="pt-3 border-t border-slate-800/80 flex items-center justify-between text-xs text-slate-400">
-                    <div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setEditingCommissionRestaurant({
+                          id: rest.id,
+                          name: rest.name,
+                          commission_percent: rest.commission_percent ?? 10,
+                        });
+                        setCommissionInputValue(rest.commission_percent ?? 10);
+                      }}
+                      className="flex items-center gap-1.5 hover:text-amber-300 transition cursor-pointer group py-0.5 px-1.5 rounded-lg hover:bg-slate-800/80 -mr-1.5"
+                      title="انقر لتعديل نسبة العمولة بشكل مستقل"
+                    >
                       <span>العمولة: </span>
-                      <span className="font-bold text-slate-200">{rest.commission_percent}%</span>
-                    </div>
+                      <span className="font-bold text-amber-400 font-mono">{rest.commission_percent}%</span>
+                      <Edit3 className="w-3 h-3 text-slate-500 group-hover:text-amber-400 transition" />
+                    </button>
                     <div>
                       <span>نطاق التوصيل: </span>
-                      <span className="font-bold text-slate-200">{rest.max_delivery_radius_km} كم</span>
+                      <span className="font-bold text-slate-200 font-mono">{rest.max_delivery_radius_km} كم</span>
                     </div>
                   </div>
 
                   <div className="pt-2 flex flex-wrap items-center justify-end gap-1.5">
+                    {/* 1. Independent Restaurant Active Toggle */}
                     <button
-                      onClick={() => handleOpenServiceAreasModal(rest)}
-                      className="px-2.5 py-1.5 rounded-lg bg-blue-500/15 hover:bg-blue-500/25 text-blue-300 border border-blue-500/30 text-[11px] font-bold flex items-center gap-1 cursor-pointer transition"
-                      title="إدارة مناطق ورسوم التوصيل"
+                      onClick={async () => {
+                        if (!hasPermission('restaurants.manage')) {
+                          showToast('ليس لديك صلاحية لتعديل حالة المطعم الإدارية', 'error');
+                          return;
+                        }
+                        const actionText = rest.is_active ? 'تعطيل' : 'تفعيل';
+                        if (!confirm(`هل أنت متأكد من ${actionText} مطعم "${rest.name}"؟ ستبقى جميع الطلبات والسجلات التاريخية محفوظة دون تغيير.`)) return;
+                        const res = await restaurantAdminService.toggleRestaurantActive(rest.id, rest.is_active);
+                        if (res.success) {
+                          showToast(rest.is_active ? 'تم تعطيل المطعم إدارياً مع حفظ جميع سجلاته' : 'تم تفعيل المطعم بنجاح للعمل على المنصة', 'success');
+                          setRestaurants((prev) =>
+                            prev.map((r) => (r.id === rest.id ? { ...r, is_active: !rest.is_active } : r))
+                          );
+                        } else {
+                          showToast(res.error || 'تعذر تعديل حالة التفعيل', 'error');
+                        }
+                      }}
+                      className={`px-2.5 py-1.5 rounded-lg text-[11px] font-bold flex items-center gap-1 cursor-pointer transition ${
+                        rest.is_active
+                          ? 'bg-rose-500/15 hover:bg-rose-500/25 text-rose-300 border border-rose-500/30'
+                          : 'bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 border border-emerald-500/30'
+                      }`}
+                      title={rest.is_active ? 'تعطيل المطعم إدارياً' : 'تفعيل المطعم'}
                     >
-                      <Truck className="w-3 h-3 text-blue-400" />
-                      <span>مناطق ورسوم التوصيل</span>
+                      {rest.is_active ? <Ban className="w-3 h-3 text-rose-400" /> : <CheckCircle2 className="w-3 h-3 text-emerald-400" />}
+                      <span>{rest.is_active ? 'تعطيل إداري' : 'تفعيل المطعم'}</span>
                     </button>
+
+                    {/* 2. Operational Open/Close Toggle */}
                     <button
                       onClick={async () => {
                         if (!hasPermission('restaurants.manage')) {
@@ -1260,16 +1333,31 @@ export const AdminRestaurantManagement: React.FC = () => {
                         }
                         const res = await restaurantAdminService.toggleRestaurantOpen(rest.id, rest.is_open);
                         if (res.success) {
-                          showToast('تم تحديث حالة الفتح بنجاح', 'success');
-                          loadRestaurants();
+                          showToast(rest.is_open ? 'تم إغلاق المطعم مؤقتاً لاستقبال الطلبات' : 'تم فتح المطعم لاستقبال الطلبات', 'success');
+                          setRestaurants((prev) =>
+                            prev.map((r) => (r.id === rest.id ? { ...r, is_open: !rest.is_open } : r))
+                          );
                         } else {
                           showToast(res.error || 'تعذر تحديث الحالة', 'error');
                         }
                       }}
                       className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-[11px] font-bold cursor-pointer"
+                      title="تغيير حالة الفتح أو الإغلاق المؤقت لاستقبال الطلبات اليومية"
                     >
                       {rest.is_open ? 'إغلاق مؤقت' : 'فتح المطعم'}
                     </button>
+
+                    {/* 3. Delivery Areas & Fees */}
+                    <button
+                      onClick={() => handleOpenServiceAreasModal(rest)}
+                      className="px-2.5 py-1.5 rounded-lg bg-blue-500/15 hover:bg-blue-500/25 text-blue-300 border border-blue-500/30 text-[11px] font-bold flex items-center gap-1 cursor-pointer transition"
+                      title="إدارة مناطق ورسوم التوصيل"
+                    >
+                      <Truck className="w-3 h-3 text-blue-400" />
+                      <span>مناطق ورسوم التوصيل</span>
+                    </button>
+
+                    {/* 4. Full Edit */}
                     <button
                       onClick={() => handleOpenEditRestaurant(rest)}
                       className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-amber-400 text-[11px] font-bold flex items-center gap-1 cursor-pointer"
@@ -2324,6 +2412,77 @@ export const AdminRestaurantManagement: React.FC = () => {
               <Sliders className="w-4 h-4 text-amber-400" />
               <span>إعدادات قسم المطاعم العامة</span>
             </h3>
+
+            {/* Architecture & Routing Status Overview Card */}
+            {sectionSettings && (
+              <div className="bg-slate-950/80 border border-slate-800 rounded-2xl p-4.5 space-y-3">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-800/80 pb-3">
+                  <div className="flex items-center gap-2.5">
+                    <div className="w-8 h-8 rounded-xl bg-amber-500/15 border border-amber-500/30 flex items-center justify-center text-amber-400 shrink-0">
+                      <ShieldAlert className="w-4 h-4" />
+                    </div>
+                    <div>
+                      <h4 className="text-xs font-black text-white">
+                        حالة منظومة قسم المطاعم والتوجيه التشغيلي
+                      </h4>
+                      <p className="text-[11px] text-slate-400">
+                        التحكم الإداري المستقل في مسار استقبال الطلبات ورؤية الواجهة للعملاء
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span
+                      className={`px-2.5 py-1 rounded-xl text-[11px] font-bold border flex items-center gap-1.5 ${
+                        sectionSettings.section_enabled
+                          ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30'
+                          : 'bg-rose-500/15 text-rose-300 border-rose-500/30'
+                      }`}
+                    >
+                      <span className={`w-2 h-2 rounded-full ${sectionSettings.section_enabled ? 'bg-emerald-400' : 'bg-rose-400'}`} />
+                      <span>{sectionSettings.section_enabled ? 'استقبال الطلبات: مفعّل' : 'استقبال الطلبات: معطّل'}</span>
+                    </span>
+
+                    <span
+                      className={`px-2.5 py-1 rounded-xl text-[11px] font-bold border flex items-center gap-1.5 ${
+                        sectionSettings.section_visibility === 'visible'
+                          ? 'bg-blue-500/15 text-blue-300 border-blue-500/30'
+                          : 'bg-slate-800 text-slate-400 border-slate-700'
+                      }`}
+                    >
+                      <Eye className="w-3.5 h-3.5" />
+                      <span>{sectionSettings.section_visibility === 'visible' ? 'الظهور بالتطبيق: مرئي' : 'الظهور بالتطبيق: مخفي'}</span>
+                    </span>
+
+                    <span className="px-2.5 py-1 rounded-xl text-[11px] font-bold bg-slate-800/90 text-amber-300 border border-slate-700">
+                      نمط التعطيل: {sectionSettings.disabled_display_mode === 'show_disabled' ? 'إظهار شارة غير متاح' : 'إخفاء القسم تلقائياً'}
+                    </span>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
+                  <div className="p-3 rounded-xl bg-slate-900/60 border border-slate-800/80 space-y-1">
+                    <div className="font-bold text-amber-400 flex items-center gap-1.5 text-[11px]">
+                      <Sliders className="w-3.5 h-3.5" />
+                      <span>فصل الظهور عن التشغيل (Decoupled Visibility):</span>
+                    </div>
+                    <p className="text-[11px] text-slate-400 leading-relaxed">
+                      حالة الظهور (<span className="text-slate-200 font-mono">section_visibility</span>) تتحكم في إظهار أيقونة وقسم المطاعم للمستخدمين في التطبيق. بينما حالة التشغيل (<span className="text-slate-200 font-mono">section_enabled</span>) تتحكم في فتح أو إغلاق مسار استقبال الطلبات الجديدة.
+                    </p>
+                  </div>
+
+                  <div className="p-3 rounded-xl bg-slate-900/60 border border-slate-800/80 space-y-1">
+                    <div className="font-bold text-emerald-400 flex items-center gap-1.5 text-[11px]">
+                      <Navigation className="w-3.5 h-3.5" />
+                      <span>التوثيق المعماري ومطابقة قاعدة البيانات:</span>
+                    </div>
+                    <p className="text-[11px] text-slate-400 leading-relaxed">
+                      جدول <span className="text-slate-200 font-mono">restaurant_section_settings</span> يعتمد حصراً على الأعمدة الرسمية: <span className="text-slate-300 font-mono">section_enabled, section_visibility, disabled_display_mode</span>. ولا يحتوي على عمود رسالة نصية مخصصة (<span className="text-rose-300 font-mono">disabled_message</span>)، والتطبيق يعتمد القيم المعتمدة نظامياً.
+                    </p>
+                  </div>
+                </div>
+              </div>
+            )}
 
             {!sectionSettings ? (
               <div className="p-8 text-center text-xs text-slate-500">
@@ -3538,9 +3697,9 @@ export const AdminRestaurantManagement: React.FC = () => {
 
                   const safeMode =
                     editingRestaurant.food_money_settlement_mode &&
-                    ['cash_on_delivery', 'online_direct', 'wallet'].includes(editingRestaurant.food_money_settlement_mode)
+                    ['per_order', 'daily', 'weekly', 'monthly'].includes(editingRestaurant.food_money_settlement_mode)
                       ? editingRestaurant.food_money_settlement_mode
-                      : 'cash_on_delivery';
+                      : 'per_order';
 
                   const payloadToSave = {
                     ...editingRestaurant,
@@ -3585,6 +3744,107 @@ export const AdminRestaurantManagement: React.FC = () => {
               >
                 {isSaving ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
                 <span>حفظ المطعم</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* =====================================================================
+          INDEPENDENT RESTAURANT COMMISSION MODAL
+          ===================================================================== */}
+      {editingCommissionRestaurant && (
+        <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-md flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-3xl max-w-md w-full p-6 space-y-4 shadow-2xl">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+              <div className="flex items-center gap-2">
+                <div className="w-8 h-8 rounded-xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-center text-amber-400">
+                  <PercentIcon className="w-4 h-4" />
+                </div>
+                <div>
+                  <h3 className="text-base font-black text-white">تعديل نسبة عمولة المطعم</h3>
+                  <p className="text-[11px] text-slate-400 truncate max-w-[240px]">
+                    {editingCommissionRestaurant.name}
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setEditingCommissionRestaurant(null)}
+                className="p-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-400 cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="space-y-3 text-xs">
+              <div>
+                <label className="block text-slate-300 font-bold mb-1">
+                  نسبة العمولة من مبيعات الطعام (%) *
+                </label>
+                <div className="relative">
+                  <input
+                    type="number"
+                    min="0"
+                    max="100"
+                    step="0.5"
+                    value={toInputNumber(commissionInputValue, 10)}
+                    onChange={(e) => setCommissionInputValue(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white outline-none focus:border-amber-500 font-mono text-sm"
+                  />
+                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 font-bold">
+                    %
+                  </span>
+                </div>
+                <p className="text-[10px] text-slate-500 mt-1">
+                  يجب أن تكون النسبة بين 0% و 100%. هذه النسبة مستقلة تماماً عن رسوم التوصيل الثابتة للمناطق أو نطاق الكيلومترات.
+                </p>
+              </div>
+
+              {/* Quick Preset Buttons */}
+              <div>
+                <label className="block text-slate-400 font-bold mb-1.5 text-[11px]">
+                  نسب مقترحة سريعة:
+                </label>
+                <div className="flex flex-wrap gap-1.5">
+                  {[0, 5, 8, 10, 12, 15, 20, 25].map((preset) => (
+                    <button
+                      key={preset}
+                      type="button"
+                      onClick={() => setCommissionInputValue(preset)}
+                      className={`px-2.5 py-1 rounded-lg text-xs font-mono font-bold cursor-pointer transition ${
+                        Number(commissionInputValue) === preset
+                          ? 'bg-amber-500 text-slate-950 shadow-sm'
+                          : 'bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700'
+                      }`}
+                    >
+                      {preset}%
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            <div className="pt-3 border-t border-slate-800 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setEditingCommissionRestaurant(null)}
+                className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-bold cursor-pointer"
+              >
+                إلغاء
+              </button>
+              <button
+                type="button"
+                disabled={isSavingCommission}
+                onClick={handleSaveQuickCommission}
+                className="px-5 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-bold flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+              >
+                {isSavingCommission ? (
+                  <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                ) : (
+                  <Save className="w-3.5 h-3.5" />
+                )}
+                <span>حفظ العمولة</span>
               </button>
             </div>
           </div>
