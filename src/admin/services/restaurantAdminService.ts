@@ -2209,17 +2209,23 @@ export const restaurantAdminService = {
 
     if (!govId || !centerId) {
       try {
-        const { data: areaMeta } = await supabase
+        const { data: areaMeta, error: areaMetaErr } = await supabase
           .from('food_areas')
           .select('governorate_id, center_id')
           .eq('id', data.area_id)
           .maybeSingle();
 
+        if (areaMetaErr) {
+          return { success: false, error: `فشل التحقق من بيانات المنطقة الجغرافية: ${areaMetaErr.message}` };
+        }
+
         if (areaMeta) {
           if (!govId && areaMeta.governorate_id) govId = areaMeta.governorate_id;
           if (!centerId && areaMeta.center_id) centerId = areaMeta.center_id;
         }
-      } catch {}
+      } catch (e: any) {
+        return { success: false, error: `خطأ أثناء قراءة بيانات المنطقة: ${e?.message || 'خطأ غير متوقع'}` };
+      }
     }
 
     if (!govId || !centerId) {
@@ -2244,6 +2250,15 @@ export const restaurantAdminService = {
       if (findAreaErr) {
         return { success: false, error: `فشل التحقق من نطاق التوصيل: ${findAreaErr.message}` };
       }
+
+      // Preserve snapshot of existing state before any modification
+      const previousAreaSnapshot = existingArea?.id
+        ? {
+            is_active: Boolean(existingArea.is_active),
+            governorate_id: existingArea.governorate_id,
+            center_id: existingArea.center_id,
+          }
+        : null;
 
       let areaUpsertResult: { id?: string; wasInserted?: boolean } = {};
 
@@ -2283,6 +2298,54 @@ export const restaurantAdminService = {
         areaUpsertResult = { id: insertedArea?.id, wasInserted: true };
       }
 
+      // Helper function to execute compensating rollback and verify its result
+      const rollbackAreaChange = async (feeFailureReason: string): Promise<{ success: boolean; error: string }> => {
+        if (areaUpsertResult.wasInserted && areaUpsertResult.id) {
+          const { error: rbDelErr } = await supabase
+            .from('restaurant_service_areas')
+            .delete()
+            .eq('id', areaUpsertResult.id);
+
+          if (rbDelErr) {
+            return {
+              success: false,
+              error: `فشل حفظ رسوم توصيل المنطقة (${feeFailureReason}). تنبيه: حدثت حالة جزئية غير مكتملة حرجة: تعذر التراجع وحذف سجل المنطقة المنشأ (${rbDelErr.message}). يرجى المراجعة يدوياً.`,
+            };
+          }
+          return {
+            success: false,
+            error: `فشل حفظ رسوم توصيل المنطقة: ${feeFailureReason}. تم حذف سجل المنطقة المنشأ لتجنب عدم اتساق البيانات.`,
+          };
+        }
+
+        if (!areaUpsertResult.wasInserted && existingArea?.id && previousAreaSnapshot) {
+          const { error: rbUpdateErr } = await supabase
+            .from('restaurant_service_areas')
+            .update({
+              is_active: previousAreaSnapshot.is_active,
+              governorate_id: previousAreaSnapshot.governorate_id,
+              center_id: previousAreaSnapshot.center_id,
+            })
+            .eq('id', existingArea.id);
+
+          if (rbUpdateErr) {
+            return {
+              success: false,
+              error: `فشل حفظ رسوم توصيل المنطقة (${feeFailureReason}). تنبيه: حدثت حالة جزئية غير مكتملة حرجة: تعذر التراجع وإعادة بيانات المنطقة السابقة (${rbUpdateErr.message}). يرجى المراجعة يدوياً.`,
+            };
+          }
+          return {
+            success: false,
+            error: `فشل حفظ رسوم توصيل المنطقة: ${feeFailureReason}. تم استعادة حالة المنطقة السابقة بنجاح.`,
+          };
+        }
+
+        return {
+          success: false,
+          error: `فشل حفظ رسوم توصيل المنطقة: ${feeFailureReason}.`,
+        };
+      };
+
       // 2. Upsert in restaurant_area_delivery_fees
       const { data: existingFee, error: findFeeErr } = await supabase
         .from('restaurant_area_delivery_fees')
@@ -2292,11 +2355,7 @@ export const restaurantAdminService = {
         .maybeSingle();
 
       if (findFeeErr) {
-        // Compensating rollback for newly inserted service area
-        if (areaUpsertResult.wasInserted && areaUpsertResult.id) {
-          await supabase.from('restaurant_service_areas').delete().eq('id', areaUpsertResult.id);
-        }
-        return { success: false, error: `فشل التحقق من رسوم المنطقة: ${findFeeErr.message}` };
+        return await rollbackAreaChange(findFeeErr.message);
       }
 
       if (existingFee?.id) {
@@ -2310,21 +2369,7 @@ export const restaurantAdminService = {
           .eq('id', existingFee.id);
 
         if (updateFeeErr) {
-          // Compensate if area was newly inserted
-          if (areaUpsertResult.wasInserted && areaUpsertResult.id) {
-            await supabase.from('restaurant_service_areas').delete().eq('id', areaUpsertResult.id);
-          } else if (existingArea) {
-            // Revert area to previous state
-            await supabase
-              .from('restaurant_service_areas')
-              .update({
-                is_active: existingArea.is_active,
-                governorate_id: existingArea.governorate_id,
-                center_id: existingArea.center_id,
-              })
-              .eq('id', existingArea.id);
-          }
-          return { success: false, error: `فشل تحديث رسوم توصيل المنطقة: ${updateFeeErr.message}` };
+          return await rollbackAreaChange(updateFeeErr.message);
         }
       } else {
         const { error: insertFeeErr } = await supabase
@@ -2339,21 +2384,7 @@ export const restaurantAdminService = {
           });
 
         if (insertFeeErr) {
-          // Compensate if area was newly inserted
-          if (areaUpsertResult.wasInserted && areaUpsertResult.id) {
-            await supabase.from('restaurant_service_areas').delete().eq('id', areaUpsertResult.id);
-          } else if (existingArea) {
-            // Revert area to previous state
-            await supabase
-              .from('restaurant_service_areas')
-              .update({
-                is_active: existingArea.is_active,
-                governorate_id: existingArea.governorate_id,
-                center_id: existingArea.center_id,
-              })
-              .eq('id', existingArea.id);
-          }
-          return { success: false, error: `فشل حفظ رسوم توصيل المنطقة: ${insertFeeErr.message}` };
+          return await rollbackAreaChange(insertFeeErr.message);
         }
       }
 

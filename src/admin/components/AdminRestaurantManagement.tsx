@@ -576,26 +576,33 @@ export const AdminRestaurantManagement: React.FC = () => {
       is_active: true,
     });
 
-    if (rest.governorate_id) {
-      const cRes = await restaurantAdminService.getFoodCenters(rest.governorate_id);
-      setServiceAreaCenters(cRes.centers || []);
-      if (rest.center_id) {
-        const aRes = await restaurantAdminService.getFoodAreas(rest.center_id, rest.governorate_id);
-        setServiceAreaAreas(aRes.areas || []);
+    try {
+      if (rest.governorate_id) {
+        const cRes = await restaurantAdminService.getFoodCenters(rest.governorate_id);
+        setServiceAreaCenters(cRes.centers || []);
+        if (rest.center_id) {
+          const aRes = await restaurantAdminService.getFoodAreas(rest.center_id, rest.governorate_id);
+          setServiceAreaAreas(aRes.areas || []);
+        } else {
+          setServiceAreaAreas([]);
+        }
       } else {
+        setServiceAreaCenters([]);
         setServiceAreaAreas([]);
       }
-    } else {
-      setServiceAreaCenters([]);
-      setServiceAreaAreas([]);
-    }
 
-    const res = await restaurantAdminService.getRestaurantServiceAreas(rest.id);
-    if (res.error) {
-      showToast(res.error, 'error');
+      const res = await restaurantAdminService.getRestaurantServiceAreas(rest.id);
+      if (res.error) {
+        showToast(res.error, 'error');
+      } else {
+        setRestaurantServiceAreas(res.serviceAreas || []);
+      }
+    } catch (err: any) {
+      console.error('Error opening service areas modal:', err);
+      showToast(err?.message || 'حدث خطأ أثناء تحميل نطاقات التوصيل', 'error');
+    } finally {
+      setIsLoadingServiceAreas(false);
     }
-    setRestaurantServiceAreas(res.serviceAreas || []);
-    setIsLoadingServiceAreas(false);
   };
 
   const handleServiceAreaGovChange = async (govId: string) => {
@@ -704,6 +711,23 @@ export const AdminRestaurantManagement: React.FC = () => {
       showToast('ليس لديك صلاحية لإزالة نطاقات التوصيل', 'error');
       return;
     }
+
+    const areaName = [
+      serviceArea.area_name_ar,
+      serviceArea.center_name_ar,
+      serviceArea.governorate_name_ar,
+    ]
+      .filter((n) => n && n !== '—')
+      .join(' - ') || 'هذه المنطقة';
+
+    const confirmDelete = window.confirm(
+      `هل أنت متأكد من حذف نطاق التوصيل "${areaName}" للمطعم؟\n\nتنبيه: سيؤدي هذا الإجراء إلى إزالة المنطقة من نطاق توصيل المطعم وحذف رسوم التوصيل المرتبطة بها نهائياً.`
+    );
+
+    if (!confirmDelete) {
+      return;
+    }
+
     const res = await restaurantAdminService.deleteRestaurantServiceArea(serviceArea.id);
     if (res.success) {
       if (selectedRestaurantForAreas) {
