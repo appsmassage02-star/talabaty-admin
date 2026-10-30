@@ -2093,6 +2093,9 @@ export const restaurantAdminService = {
   // ==========================================================================
   // 16. RESTAURANT SERVICE AREAS & DELIVERY FEES
   // Tables: restaurant_service_areas & restaurant_area_delivery_fees
+  // Constraints:
+  // - restaurant_service_areas: governorate_id and center_id NOT NULL
+  // - UNIQUE(restaurant_id, area_id) on both tables
   // ==========================================================================
   async getRestaurantServiceAreas(restaurantId: string): Promise<{
     serviceAreas: RestaurantServiceArea[];
@@ -2119,10 +2122,17 @@ export const restaurantAdminService = {
       if (areasRes.error) {
         return { serviceAreas: [], error: `فشل جلب مناطق التوصيل: ${areasRes.error.message}` };
       }
+      if (feesRes.error) {
+        return { serviceAreas: [], error: `فشل جلب رسوم مناطق التوصيل: ${feesRes.error.message}` };
+      }
 
       const rawAreas = (areasRes.data || []) as RestaurantServiceArea[];
       const feesMap = new Map<string, number>();
-      (feesRes.data || []).forEach((f: any) => feesMap.set(f.area_id, Number(f.delivery_fee)));
+      (feesRes.data || []).forEach((f: any) => {
+        if (f.delivery_fee !== null && f.delivery_fee !== undefined) {
+          feesMap.set(f.area_id, Number(f.delivery_fee));
+        }
+      });
 
       if (rawAreas.length === 0) {
         return { serviceAreas: [] };
@@ -2193,6 +2203,32 @@ export const restaurantAdminService = {
       return { success: false, error: 'رسوم التوصيل للمنطقة يجب أن تكون صفر أو قيمة موجبة' };
     }
 
+    // Resolve governorate_id and center_id to prevent sending NULL to NOT NULL database columns
+    let govId = data.governorate_id?.trim() || null;
+    let centerId = data.center_id?.trim() || null;
+
+    if (!govId || !centerId) {
+      try {
+        const { data: areaMeta } = await supabase
+          .from('food_areas')
+          .select('governorate_id, center_id')
+          .eq('id', data.area_id)
+          .maybeSingle();
+
+        if (areaMeta) {
+          if (!govId && areaMeta.governorate_id) govId = areaMeta.governorate_id;
+          if (!centerId && areaMeta.center_id) centerId = areaMeta.center_id;
+        }
+      } catch {}
+    }
+
+    if (!govId || !centerId) {
+      return {
+        success: false,
+        error: 'المحافظة والمركز مطلوبان لربط نطاق التوصيل ولا يمكن حفظ النطاق بقيم فارغة وفق قيود قاعدة البيانات.',
+      };
+    }
+
     const isActive = data.is_active !== undefined ? Boolean(data.is_active) : true;
     const nowIso = new Date().toISOString();
 
@@ -2200,7 +2236,7 @@ export const restaurantAdminService = {
       // 1. Check if restaurant_service_areas already has this pair
       const { data: existingArea, error: findAreaErr } = await supabase
         .from('restaurant_service_areas')
-        .select('id, restaurant_id, area_id')
+        .select('id, restaurant_id, area_id, governorate_id, center_id, is_active')
         .eq('restaurant_id', data.restaurant_id)
         .eq('area_id', data.area_id)
         .maybeSingle();
@@ -2209,13 +2245,15 @@ export const restaurantAdminService = {
         return { success: false, error: `فشل التحقق من نطاق التوصيل: ${findAreaErr.message}` };
       }
 
+      let areaUpsertResult: { id?: string; wasInserted?: boolean } = {};
+
       if (existingArea?.id) {
         const { error: updateAreaErr } = await supabase
           .from('restaurant_service_areas')
           .update({
             is_active: isActive,
-            governorate_id: data.governorate_id || null,
-            center_id: data.center_id || null,
+            governorate_id: govId,
+            center_id: centerId,
             updated_at: nowIso,
           })
           .eq('id', existingArea.id);
@@ -2223,33 +2261,41 @@ export const restaurantAdminService = {
         if (updateAreaErr) {
           return { success: false, error: `فشل تحديث منطقة التوصيل: ${updateAreaErr.message}` };
         }
+        areaUpsertResult = { id: existingArea.id, wasInserted: false };
       } else {
-        const { error: insertAreaErr } = await supabase
+        const { data: insertedArea, error: insertAreaErr } = await supabase
           .from('restaurant_service_areas')
           .insert({
             restaurant_id: data.restaurant_id,
-            governorate_id: data.governorate_id || null,
-            center_id: data.center_id || null,
+            governorate_id: govId,
+            center_id: centerId,
             area_id: data.area_id,
             is_active: isActive,
             created_at: nowIso,
             updated_at: nowIso,
-          });
+          })
+          .select('id')
+          .single();
 
         if (insertAreaErr) {
           return { success: false, error: `فشل إضافة منطقة التوصيل: ${insertAreaErr.message}` };
         }
+        areaUpsertResult = { id: insertedArea?.id, wasInserted: true };
       }
 
       // 2. Upsert in restaurant_area_delivery_fees
       const { data: existingFee, error: findFeeErr } = await supabase
         .from('restaurant_area_delivery_fees')
-        .select('id')
+        .select('id, delivery_fee, is_active')
         .eq('restaurant_id', data.restaurant_id)
         .eq('area_id', data.area_id)
         .maybeSingle();
 
       if (findFeeErr) {
+        // Compensating rollback for newly inserted service area
+        if (areaUpsertResult.wasInserted && areaUpsertResult.id) {
+          await supabase.from('restaurant_service_areas').delete().eq('id', areaUpsertResult.id);
+        }
         return { success: false, error: `فشل التحقق من رسوم المنطقة: ${findFeeErr.message}` };
       }
 
@@ -2264,6 +2310,20 @@ export const restaurantAdminService = {
           .eq('id', existingFee.id);
 
         if (updateFeeErr) {
+          // Compensate if area was newly inserted
+          if (areaUpsertResult.wasInserted && areaUpsertResult.id) {
+            await supabase.from('restaurant_service_areas').delete().eq('id', areaUpsertResult.id);
+          } else if (existingArea) {
+            // Revert area to previous state
+            await supabase
+              .from('restaurant_service_areas')
+              .update({
+                is_active: existingArea.is_active,
+                governorate_id: existingArea.governorate_id,
+                center_id: existingArea.center_id,
+              })
+              .eq('id', existingArea.id);
+          }
           return { success: false, error: `فشل تحديث رسوم توصيل المنطقة: ${updateFeeErr.message}` };
         }
       } else {
@@ -2279,6 +2339,20 @@ export const restaurantAdminService = {
           });
 
         if (insertFeeErr) {
+          // Compensate if area was newly inserted
+          if (areaUpsertResult.wasInserted && areaUpsertResult.id) {
+            await supabase.from('restaurant_service_areas').delete().eq('id', areaUpsertResult.id);
+          } else if (existingArea) {
+            // Revert area to previous state
+            await supabase
+              .from('restaurant_service_areas')
+              .update({
+                is_active: existingArea.is_active,
+                governorate_id: existingArea.governorate_id,
+                center_id: existingArea.center_id,
+              })
+              .eq('id', existingArea.id);
+          }
           return { success: false, error: `فشل حفظ رسوم توصيل المنطقة: ${insertFeeErr.message}` };
         }
       }
@@ -2300,31 +2374,73 @@ export const restaurantAdminService = {
 
     try {
       const nowIso = new Date().toISOString();
-      const { data: current, error: getErr } = await supabase
+
+      // 1. Read current state of both records before modifying
+      const { data: currentArea, error: getAreaErr } = await supabase
         .from('restaurant_service_areas')
-        .select('restaurant_id, area_id')
+        .select('id, restaurant_id, area_id, is_active')
         .eq('id', serviceAreaId)
         .single();
 
-      if (getErr || !current) {
-        return { success: false, error: getErr?.message || 'لم يتم العثور على النطاق' };
+      if (getAreaErr || !currentArea) {
+        return { success: false, error: getAreaErr?.message || 'لم يتم العثور على منطقة التوصيل المطلوبة' };
       }
 
+      const { data: currentFee, error: getFeeErr } = await supabase
+        .from('restaurant_area_delivery_fees')
+        .select('id, is_active')
+        .eq('restaurant_id', currentArea.restaurant_id)
+        .eq('area_id', currentArea.area_id)
+        .maybeSingle();
+
+      if (getFeeErr) {
+        return { success: false, error: `فشل قراءة سجل رسوم التوصيل: ${getFeeErr.message}` };
+      }
+
+      if (!currentFee) {
+        return {
+          success: false,
+          error: 'سجل رسوم التوصيل المقترن بهذه المنطقة غير موجود في جدول restaurant_area_delivery_fees',
+        };
+      }
+
+      const previousAreaActive = currentArea.is_active;
+
+      // 2. Update restaurant_service_areas
       const { error: areaErr } = await supabase
         .from('restaurant_service_areas')
         .update({ is_active: isActive, updated_at: nowIso })
         .eq('id', serviceAreaId);
 
       if (areaErr) {
-        return { success: false, error: `فشل تحديث حالة المنطقة: ${areaErr.message}` };
+        return { success: false, error: `فشل تحديث حالة منطقة التوصيل: ${areaErr.message}` };
       }
 
-      // Keep is_active in delivery fees aligned
-      await supabase
+      // 3. Update restaurant_area_delivery_fees
+      const { error: feeErr } = await supabase
         .from('restaurant_area_delivery_fees')
         .update({ is_active: isActive, updated_at: nowIso })
-        .eq('restaurant_id', current.restaurant_id)
-        .eq('area_id', current.area_id);
+        .eq('id', currentFee.id);
+
+      if (feeErr) {
+        // Compensating rollback: try to restore restaurant_service_areas to previous state
+        const { error: rollbackErr } = await supabase
+          .from('restaurant_service_areas')
+          .update({ is_active: previousAreaActive, updated_at: new Date().toISOString() })
+          .eq('id', serviceAreaId);
+
+        if (rollbackErr) {
+          return {
+            success: false,
+            error: `حالة جزئية حرجة: تم تحديث حالة المنطقة لكن فشل تحديث الرسوم (${feeErr.message})، وفشلت أيضاً محاولة استعادة حالة المنطقة (${rollbackErr.message}). يرجى مراجعة السجل يدوياً.`,
+          };
+        }
+
+        return {
+          success: false,
+          error: `فشل تحديث حالة رسوم التوصيل: ${feeErr.message}. تمت استعادة حالة المنطقة السابقة بنجاح للحفاظ على توافق البيانات.`,
+        };
+      }
 
       return { success: true };
     } catch (err: any) {
@@ -2341,30 +2457,75 @@ export const restaurantAdminService = {
     if (!serviceAreaId) return { success: false, error: 'معرف نطاق التوصيل مطلوب' };
 
     try {
-      const { data: current, error: getErr } = await supabase
+      // 1. Read existing area and fee records before deletion
+      const { data: currentArea, error: getAreaErr } = await supabase
         .from('restaurant_service_areas')
-        .select('restaurant_id, area_id')
+        .select('id, restaurant_id, governorate_id, center_id, area_id, is_active, created_at, updated_at')
         .eq('id', serviceAreaId)
         .single();
 
-      if (getErr || !current) {
-        return { success: false, error: getErr?.message || 'لم يتم العثور على النطاق' };
+      if (getAreaErr || !currentArea) {
+        return { success: false, error: getAreaErr?.message || 'لم يتم العثور على منطقة التوصيل المطلوبة' };
       }
 
-      const { error: delErr } = await supabase
+      const { data: currentFee, error: getFeeErr } = await supabase
+        .from('restaurant_area_delivery_fees')
+        .select('id, restaurant_id, area_id, delivery_fee, is_active, notes, created_at, updated_at')
+        .eq('restaurant_id', currentArea.restaurant_id)
+        .eq('area_id', currentArea.area_id)
+        .maybeSingle();
+
+      if (getFeeErr) {
+        return { success: false, error: `فشل قراءة سجل رسوم التوصيل للمنطقة: ${getFeeErr.message}` };
+      }
+
+      // 2. Safe deletion order: delete restaurant_service_areas first so fee data is not lost if area deletion fails.
+      const { error: delAreaErr } = await supabase
         .from('restaurant_service_areas')
         .delete()
         .eq('id', serviceAreaId);
 
-      if (delErr) {
-        return { success: false, error: `فشل إزالة منطقة التوصيل: ${delErr.message}` };
+      if (delAreaErr) {
+        return { success: false, error: `فشل إزالة منطقة التوصيل: ${delAreaErr.message}` };
       }
 
-      await supabase
-        .from('restaurant_area_delivery_fees')
-        .delete()
-        .eq('restaurant_id', current.restaurant_id)
-        .eq('area_id', current.area_id);
+      // 3. Delete restaurant_area_delivery_fees if present
+      if (currentFee) {
+        const { error: delFeeErr } = await supabase
+          .from('restaurant_area_delivery_fees')
+          .delete()
+          .eq('id', currentFee.id);
+
+        if (delFeeErr) {
+          // Compensating action: restore the deleted restaurant_service_areas record with its exact original values
+          const restorePayload = {
+            id: currentArea.id,
+            restaurant_id: currentArea.restaurant_id,
+            governorate_id: currentArea.governorate_id,
+            center_id: currentArea.center_id,
+            area_id: currentArea.area_id,
+            is_active: currentArea.is_active,
+            created_at: currentArea.created_at || new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+          };
+
+          const { error: restoreAreaErr } = await supabase
+            .from('restaurant_service_areas')
+            .insert(restorePayload);
+
+          if (restoreAreaErr) {
+            return {
+              success: false,
+              error: `حالة جزئية حرجة: تم حذف منطقة الخدمة (${currentArea.id}) ولكن فشل حذف سجل الرسوم المقترن (${delFeeErr.message})، وتعذرت أيضاً استعادة منطقة الخدمة المحذوفة (${restoreAreaErr.message}). النتيجة: حُذفت المنطقة وبقي سجل الرسوم. يرجى المراجعة يدوياً.`,
+            };
+          }
+
+          return {
+            success: false,
+            error: `فشل حذف سجل رسوم التوصيل: ${delFeeErr.message}. تمت استعادة منطقة التوصيل بنجاح لمنع فقدان البيانات أو تضاربها.`,
+          };
+        }
+      }
 
       return { success: true };
     } catch (err: any) {

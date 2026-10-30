@@ -591,6 +591,9 @@ export const AdminRestaurantManagement: React.FC = () => {
     }
 
     const res = await restaurantAdminService.getRestaurantServiceAreas(rest.id);
+    if (res.error) {
+      showToast(res.error, 'error');
+    }
     setRestaurantServiceAreas(res.serviceAreas || []);
     setIsLoadingServiceAreas(false);
   };
@@ -653,10 +656,16 @@ export const AdminRestaurantManagement: React.FC = () => {
     setIsSavingServiceArea(false);
 
     if (res.success) {
-      showToast('تم حفظ نطاق ورسوم التوصيل بنجاح', 'success');
+      // Reload list and verify listRes.error
       const listRes = await restaurantAdminService.getRestaurantServiceAreas(selectedRestaurantForAreas.id);
-      setRestaurantServiceAreas(listRes.serviceAreas || []);
-      setNewServiceAreaForm((prev) => ({ ...prev, area_id: '' }));
+      if (listRes.error) {
+        showToast(`تم حفظ منطقة التوصيل بنجاح، ولكن تعذر تحديث القائمة: ${listRes.error}`, 'warning');
+      } else {
+        showToast('تم حفظ نطاق ورسوم التوصيل بنجاح', 'success');
+        setRestaurantServiceAreas(listRes.serviceAreas || []);
+        // Only reset area_id upon verified reload
+        setNewServiceAreaForm((prev) => ({ ...prev, area_id: '' }));
+      }
     } else {
       showToast(res.error || 'تعذر حفظ نطاق التوصيل', 'error');
     }
@@ -670,10 +679,20 @@ export const AdminRestaurantManagement: React.FC = () => {
     const nextState = !serviceArea.is_active;
     const res = await restaurantAdminService.toggleRestaurantServiceArea(serviceArea.id, nextState);
     if (res.success) {
-      showToast(nextState ? 'تم تفعيل التوصيل للمنطقة' : 'تم تعطيل التوصيل للمنطقة مؤقتاً', 'success');
       if (selectedRestaurantForAreas) {
         const listRes = await restaurantAdminService.getRestaurantServiceAreas(selectedRestaurantForAreas.id);
-        setRestaurantServiceAreas(listRes.serviceAreas || []);
+        if (listRes.error) {
+          showToast(`تم تحديث حالة المنطقة، ولكن تعذر إعادة تحميل القائمة: ${listRes.error}`, 'warning');
+          // Optimistically update existing state without wiping list
+          setRestaurantServiceAreas((prev) =>
+            prev.map((sa) => (sa.id === serviceArea.id ? { ...sa, is_active: nextState } : sa))
+          );
+        } else {
+          showToast(nextState ? 'تم تفعيل التوصيل للمنطقة' : 'تم تعطيل التوصيل للمنطقة مؤقتاً', 'success');
+          setRestaurantServiceAreas(listRes.serviceAreas || []);
+        }
+      } else {
+        showToast(nextState ? 'تم تفعيل التوصيل للمنطقة' : 'تم تعطيل التوصيل للمنطقة مؤقتاً', 'success');
       }
     } else {
       showToast(res.error || 'تعذر تغيير حالة المنطقة', 'error');
@@ -687,10 +706,18 @@ export const AdminRestaurantManagement: React.FC = () => {
     }
     const res = await restaurantAdminService.deleteRestaurantServiceArea(serviceArea.id);
     if (res.success) {
-      showToast('تمت إزالة المنطقة من نطاق التوصيل', 'success');
       if (selectedRestaurantForAreas) {
         const listRes = await restaurantAdminService.getRestaurantServiceAreas(selectedRestaurantForAreas.id);
-        setRestaurantServiceAreas(listRes.serviceAreas || []);
+        if (listRes.error) {
+          showToast(`تمت إزالة المنطقة من نطاق التوصيل، ولكن تعذر إعادة قراءة القائمة: ${listRes.error}`, 'warning');
+          // Filter out deleted record locally without resetting to empty
+          setRestaurantServiceAreas((prev) => prev.filter((sa) => sa.id !== serviceArea.id));
+        } else {
+          showToast('تمت إزالة المنطقة من نطاق التوصيل بنجاح', 'success');
+          setRestaurantServiceAreas(listRes.serviceAreas || []);
+        }
+      } else {
+        showToast('تمت إزالة المنطقة من نطاق التوصيل بنجاح', 'success');
       }
     } else {
       showToast(res.error || 'تعذر إزالة المنطقة', 'error');

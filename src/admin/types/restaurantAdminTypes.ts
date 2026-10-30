@@ -93,8 +93,8 @@ export interface FoodArea {
 export interface RestaurantServiceArea {
   id: string;
   restaurant_id: string;
-  governorate_id?: string | null;
-  center_id?: string | null;
+  governorate_id: string;
+  center_id: string;
   area_id: string;
   is_active: boolean;
   created_at?: string;
