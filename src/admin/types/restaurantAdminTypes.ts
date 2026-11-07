@@ -31,6 +31,7 @@ export interface Restaurant {
   image_url: string | null;
   is_active: boolean;
   is_open: boolean;
+  restaurant_delivery_enabled?: boolean | null;
   max_delivery_radius_km: number;
   commission_percent: number;
   delivery_fee: number;

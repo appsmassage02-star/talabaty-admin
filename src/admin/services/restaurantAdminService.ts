@@ -133,7 +133,7 @@ export const restaurantAdminService = {
       let query = supabase
         .from('restaurants')
         .select(
-          'id, owner_user_id, name, description, phone, address, latitude, longitude, image_url, is_active, is_open, max_delivery_radius_km, commission_percent, delivery_fee, food_money_settlement_mode, country_name, governorate_id, center_id, area_id, street, detailed_address, created_at, updated_at'
+          'id, owner_user_id, name, description, phone, address, latitude, longitude, image_url, is_active, is_open, restaurant_delivery_enabled, max_delivery_radius_km, commission_percent, delivery_fee, food_money_settlement_mode, country_name, governorate_id, center_id, area_id, street, detailed_address, created_at, updated_at'
         )
         .order('created_at', { ascending: false });
 
@@ -247,6 +247,7 @@ export const restaurantAdminService = {
     image_url?: string | null;
     is_active?: boolean;
     is_open?: boolean;
+    restaurant_delivery_enabled?: boolean;
     max_delivery_radius_km?: number;
     commission_percent?: number;
     delivery_fee?: number;
@@ -326,6 +327,10 @@ export const restaurantAdminService = {
         image_url: data.image_url?.trim() || null,
         is_active: data.is_active !== undefined ? Boolean(data.is_active) : true,
         is_open: data.is_open !== undefined ? Boolean(data.is_open) : true,
+        restaurant_delivery_enabled:
+          data.restaurant_delivery_enabled !== undefined
+            ? Boolean(data.restaurant_delivery_enabled)
+            : false,
         max_delivery_radius_km: radius,
         commission_percent: commission,
         delivery_fee: fee,
@@ -453,6 +458,9 @@ export const restaurantAdminService = {
       if (updates.image_url !== undefined) patch.image_url = updates.image_url?.trim() || null;
       if (updates.is_active !== undefined) patch.is_active = Boolean(updates.is_active);
       if (updates.is_open !== undefined) patch.is_open = Boolean(updates.is_open);
+      if (updates.restaurant_delivery_enabled !== undefined) {
+        patch.restaurant_delivery_enabled = Boolean(updates.restaurant_delivery_enabled);
+      }
       if (updates.food_money_settlement_mode !== undefined) {
         const mode = updates.food_money_settlement_mode;
         patch.food_money_settlement_mode =
@@ -521,6 +529,13 @@ export const restaurantAdminService = {
 
   async toggleRestaurantOpen(id: string, currentStatus: boolean): Promise<{ success: boolean; error?: string }> {
     return this.updateRestaurant(id, { is_open: !currentStatus });
+  },
+
+  async toggleRestaurantDelivery(
+    id: string,
+    enabled: boolean
+  ): Promise<{ success: boolean; restaurant?: Restaurant; error?: string }> {
+    return this.updateRestaurant(id, { restaurant_delivery_enabled: enabled });
   },
 
   async getRestaurantCategoryIds(restaurantId: string): Promise<string[]> {

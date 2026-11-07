@@ -80,6 +80,7 @@ import {
   Crosshair,
   Compass,
   Truck,
+  Loader2,
 } from 'lucide-react';
 
 export type RestaurantNavTab =
@@ -236,6 +237,9 @@ export const AdminRestaurantManagement: React.FC = () => {
   } | null>(null);
   const [commissionInputValue, setCommissionInputValue] = useState<number | string>(10);
   const [isSavingCommission, setIsSavingCommission] = useState(false);
+
+  // Dedicated Independent Restaurant Delivery Toggle State
+  const [updatingDeliveryRestaurantId, setUpdatingDeliveryRestaurantId] = useState<string | null>(null);
 
   // =========================================================================
   // DATA LOADERS
@@ -893,6 +897,46 @@ export const AdminRestaurantManagement: React.FC = () => {
     }
   };
 
+  const handleToggleRestaurantDelivery = async (rest: Restaurant) => {
+    if (!hasPermission('restaurants.manage')) {
+      showToast('ليس لديك صلاحية لتعديل حالة دليفري المطعم', 'error');
+      return;
+    }
+
+    const currentStatus = Boolean(rest.restaurant_delivery_enabled);
+    const nextStatus = !currentStatus;
+
+    setUpdatingDeliveryRestaurantId(rest.id);
+    try {
+      const res = await restaurantAdminService.toggleRestaurantDelivery(rest.id, nextStatus);
+      if (res.success) {
+        const savedStatus =
+          res.restaurant?.restaurant_delivery_enabled !== undefined
+            ? Boolean(res.restaurant.restaurant_delivery_enabled)
+            : nextStatus;
+
+        setRestaurants((prev) =>
+          prev.map((r) =>
+            r.id === rest.id ? { ...r, restaurant_delivery_enabled: savedStatus } : r
+          )
+        );
+
+        showToast(
+          savedStatus
+            ? `تم تفعيل دليفري مطعم "${rest.name}" بنجاح`
+            : `تم تعطيل دليفري مطعم "${rest.name}" بنجاح`,
+          'success'
+        );
+      } else {
+        showToast(res.error || 'تعذر تحديث حالة دليفري المطعم', 'error');
+      }
+    } catch (err: any) {
+      showToast(err?.message || 'حدث خطأ أثناء تحديث حالة دليفري المطعم', 'error');
+    } finally {
+      setUpdatingDeliveryRestaurantId(null);
+    }
+  };
+
   useEffect(() => {
     switch (currentTab) {
       case 'restaurant_overview':
@@ -1288,6 +1332,16 @@ export const AdminRestaurantManagement: React.FC = () => {
                       >
                         {rest.is_open ? 'مفتوح للطلبات' : 'مغلق مؤقتاً'}
                       </span>
+                      <span
+                        className={`px-2 py-0.5 rounded-lg text-[10px] font-bold border flex items-center gap-1 ${
+                          rest.restaurant_delivery_enabled
+                            ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30'
+                            : 'bg-rose-500/15 text-rose-300 border-rose-500/30'
+                        }`}
+                      >
+                        <Truck className="w-2.5 h-2.5" />
+                        <span>دليفري: {rest.restaurant_delivery_enabled ? 'مفعّل' : 'معطّل'}</span>
+                      </span>
                     </div>
                   </div>
 
@@ -1342,6 +1396,73 @@ export const AdminRestaurantManagement: React.FC = () => {
                       <span>نطاق التوصيل: </span>
                       <span className="font-bold text-slate-200 font-mono">{rest.max_delivery_radius_km} كم</span>
                     </div>
+                  </div>
+
+                  {/* مفتاح تحكم دليفري المطعم المستقل */}
+                  <div className="p-2.5 rounded-xl bg-slate-900/90 border border-slate-800 flex items-center justify-between gap-3">
+                    <div className="flex items-center gap-2.5 min-w-0">
+                      <div
+                        className={`p-1.5 rounded-lg shrink-0 ${
+                          rest.restaurant_delivery_enabled
+                            ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/20'
+                            : 'bg-rose-500/10 text-rose-400 border border-rose-500/20'
+                        }`}
+                      >
+                        <Truck className="w-4 h-4" />
+                      </div>
+                      <div className="min-w-0">
+                        <div className="text-xs font-bold text-white flex items-center gap-1.5">
+                          <span>دليفري المطعم</span>
+                          <span
+                            className={`px-1.5 py-0.5 rounded text-[10px] font-bold border ${
+                              rest.restaurant_delivery_enabled
+                                ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30'
+                                : 'bg-rose-500/15 text-rose-300 border-rose-500/30'
+                            }`}
+                          >
+                            {rest.restaurant_delivery_enabled ? 'مفعّل' : 'معطّل'}
+                          </span>
+                        </div>
+                        <p className="text-[10px] text-slate-400 truncate">
+                          {rest.restaurant_delivery_enabled
+                            ? 'خدمة توصيل الطلبات الخاصة بالمطعم مفعلة ومتاحة'
+                            : 'خدمة توصيل الطلبات معطلة لهذا المطعم'}
+                        </p>
+                      </div>
+                    </div>
+
+                    <button
+                      type="button"
+                      disabled={updatingDeliveryRestaurantId === rest.id}
+                      onClick={() => handleToggleRestaurantDelivery(rest)}
+                      className={`px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 shrink-0 cursor-pointer transition border disabled:opacity-60 disabled:cursor-not-allowed ${
+                        rest.restaurant_delivery_enabled
+                          ? 'bg-rose-500/15 hover:bg-rose-500/25 text-rose-300 border-rose-500/30'
+                          : 'bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 border-emerald-500/30'
+                      }`}
+                      title={
+                        rest.restaurant_delivery_enabled
+                          ? 'انقر لتعطيل دليفري المطعم'
+                          : 'انقر لتفعيل دليفري المطعم'
+                      }
+                    >
+                      {updatingDeliveryRestaurantId === rest.id ? (
+                        <>
+                          <Loader2 className="w-3.5 h-3.5 animate-spin text-amber-400" />
+                          <span>جاري التحديث...</span>
+                        </>
+                      ) : rest.restaurant_delivery_enabled ? (
+                        <>
+                          <Ban className="w-3.5 h-3.5 text-rose-400" />
+                          <span>تعطيل</span>
+                        </>
+                      ) : (
+                        <>
+                          <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                          <span>تفعيل</span>
+                        </>
+                      )}
+                    </button>
                   </div>
 
                   <div className="pt-2 flex flex-wrap items-center justify-end gap-1.5">
