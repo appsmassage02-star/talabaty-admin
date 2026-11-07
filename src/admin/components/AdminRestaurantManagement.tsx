@@ -36,6 +36,9 @@ import {
   RestaurantServiceArea,
   RestaurantSectionServiceArea,
   RestaurantAreaDeliveryFee,
+  RestaurantDispatchSettings,
+  RestaurantCancellationRequest,
+  ReassignableDriver,
 } from '../types/restaurantAdminTypes';
 import {
   UtensilsCrossed,
@@ -81,6 +84,12 @@ import {
   Compass,
   Truck,
   Loader2,
+  UserCheck,
+  RotateCcw,
+  FileQuestion,
+  CheckSquare,
+  XCircle,
+  ArrowRight,
 } from 'lucide-react';
 
 export type RestaurantNavTab =
@@ -91,6 +100,7 @@ export type RestaurantNavTab =
   | 'restaurant_options'
   | 'restaurant_offers'
   | 'restaurant_orders'
+  | 'restaurant_cancellations'
   | 'restaurant_delivery'
   | 'restaurant_invoices'
   | 'restaurant_settlements'
@@ -105,6 +115,7 @@ const TABS: { id: RestaurantNavTab; label: string; icon: React.FC<{ className?: 
   { id: 'restaurant_options', label: 'الإضافات والاختيارات', icon: ListPlus },
   { id: 'restaurant_offers', label: 'العروض والخصومات', icon: Percent },
   { id: 'restaurant_orders', label: 'طلبات المطاعم', icon: PackageCheck },
+  { id: 'restaurant_cancellations', label: 'طلبات الإلغاء', icon: Ban },
   { id: 'restaurant_delivery', label: 'عمليات التوصيل', icon: Bike },
   { id: 'restaurant_invoices', label: 'الفواتير', icon: Receipt },
   { id: 'restaurant_settlements', label: 'الحسابات والتسويات', icon: Wallet },
@@ -240,6 +251,43 @@ export const AdminRestaurantManagement: React.FC = () => {
 
   // Dedicated Independent Restaurant Delivery Toggle State
   const [updatingDeliveryRestaurantId, setUpdatingDeliveryRestaurantId] = useState<string | null>(null);
+
+  // Automated Dispatch Settings State (public.restaurant_dispatch_settings)
+  const [dispatchSettings, setDispatchSettings] = useState<RestaurantDispatchSettings | null>(null);
+  const [isLoadingDispatchSettings, setIsLoadingDispatchSettings] = useState(false);
+  const [isSavingDispatchSettings, setIsSavingDispatchSettings] = useState(false);
+  const [dispatchForm, setDispatchForm] = useState({
+    offer_timeout_seconds: 120,
+    max_attempts: 5,
+    retry_delay_seconds: 5,
+    fallback_to_restaurant_delivery: true,
+  });
+
+  // Restaurant Cancellation Requests State
+  const [cancellationRequests, setCancellationRequests] = useState<RestaurantCancellationRequest[]>([]);
+  const [isLoadingCancellations, setIsLoadingCancellations] = useState(false);
+  const [cancellationStatusFilter, setCancellationStatusFilter] = useState<'all' | 'pending' | 'approved' | 'rejected'>('all');
+  const [selectedCancellationDetail, setSelectedCancellationDetail] = useState<RestaurantCancellationRequest | null>(null);
+  const [cancellationDecisionModal, setCancellationDecisionModal] = useState<{
+    request: RestaurantCancellationRequest;
+    approve: boolean;
+  } | null>(null);
+  const [cancellationDecisionReason, setCancellationDecisionReason] = useState('');
+  const [isSubmittingCancellationDecision, setIsSubmittingCancellationDecision] = useState(false);
+
+  // Admin Order Cancel Modal State (Inside Order Details)
+  const [isAdminCancelModalOpen, setIsAdminCancelModalOpen] = useState(false);
+  const [adminCancelReason, setAdminCancelReason] = useState('');
+  const [isSubmittingAdminCancel, setIsSubmittingAdminCancel] = useState(false);
+
+  // Driver Reassignment Modal State (Inside Order Details)
+  const [isReassignModalOpen, setIsReassignModalOpen] = useState(false);
+  const [reassignableDrivers, setReassignableDrivers] = useState<ReassignableDriver[]>([]);
+  const [isLoadingReassignableDrivers, setIsLoadingReassignableDrivers] = useState(false);
+  const [selectedNewDriverId, setSelectedNewDriverId] = useState('');
+  const [reassignReason, setReassignReason] = useState('');
+  const [isSubmittingReassignment, setIsSubmittingReassignment] = useState(false);
+  const [isReassignConfirmStep, setIsReassignConfirmStep] = useState(false);
 
   // =========================================================================
   // DATA LOADERS
@@ -377,6 +425,35 @@ export const AdminRestaurantManagement: React.FC = () => {
     setIsLoading(false);
     setIsLoadingSectionAreas(false);
   }, [selectedRestaurantFilter, showToast]);
+
+  const loadDispatchSettings = useCallback(async () => {
+    setIsLoadingDispatchSettings(true);
+    const res = await restaurantAdminService.getDispatchSettings();
+    if (res.error) {
+      showToast(res.error, 'error');
+    } else if (res.settings) {
+      setDispatchSettings(res.settings);
+      setDispatchForm({
+        offer_timeout_seconds: res.settings.offer_timeout_seconds,
+        max_attempts: res.settings.max_attempts,
+        retry_delay_seconds: res.settings.retry_delay_seconds,
+        fallback_to_restaurant_delivery: res.settings.fallback_to_restaurant_delivery,
+      });
+    }
+    setIsLoadingDispatchSettings(false);
+  }, [showToast]);
+
+  const loadCancellations = useCallback(async (statusOverride?: string) => {
+    setIsLoadingCancellations(true);
+    const status = statusOverride !== undefined ? statusOverride : cancellationStatusFilter;
+    const res = await restaurantAdminService.listCancellationRequests(status);
+    if (res.error) {
+      showToast(res.error, 'error');
+    } else {
+      setCancellationRequests(res.requests || []);
+    }
+    setIsLoadingCancellations(false);
+  }, [cancellationStatusFilter, showToast]);
 
   // Main Effect to route active tab loading
   useEffect(() => {
@@ -960,6 +1037,9 @@ export const AdminRestaurantManagement: React.FC = () => {
       case 'restaurant_orders':
         loadOrders();
         break;
+      case 'restaurant_cancellations':
+        loadCancellations();
+        break;
       case 'restaurant_delivery':
         loadDelivery();
         break;
@@ -974,6 +1054,7 @@ export const AdminRestaurantManagement: React.FC = () => {
         break;
       case 'restaurant_settings':
         loadSettingsAndHistory();
+        loadDispatchSettings();
         break;
     }
   }, [
@@ -985,11 +1066,13 @@ export const AdminRestaurantManagement: React.FC = () => {
     loadOptions,
     loadOffers,
     loadOrders,
+    loadCancellations,
     loadDelivery,
     loadInvoices,
     loadSettlements,
     loadComplaints,
     loadSettingsAndHistory,
+    loadDispatchSettings,
   ]);
 
   // Open Order Details Modal
@@ -1019,6 +1102,260 @@ export const AdminRestaurantManagement: React.FC = () => {
       });
     } catch {
       return iso;
+    }
+  };
+
+  // =========================================================================
+  // DISPATCH SETTINGS HANDLERS
+  // =========================================================================
+  const handleSaveDispatchSettings = async () => {
+    if (!hasPermission('restaurants.manage')) {
+      showToast('ليس لديك صلاحية لتعديل إعدادات التوزيع الآلي', 'error');
+      return;
+    }
+
+    const offerTimeout = Number(dispatchForm.offer_timeout_seconds);
+    const maxAttempts = Number(dispatchForm.max_attempts);
+    const retryDelay = Number(dispatchForm.retry_delay_seconds);
+
+    if (isNaN(offerTimeout) || offerTimeout < 30 || offerTimeout > 900) {
+      showToast('مهلة العرض يجب أن تكون بين 30 و 900 ثانية', 'error');
+      return;
+    }
+    if (isNaN(maxAttempts) || maxAttempts < 1 || maxAttempts > 20) {
+      showToast('عدد المحاولات الأقصى يجب أن يكون بين 1 و 20 محاولة', 'error');
+      return;
+    }
+    if (isNaN(retryDelay) || retryDelay < 1 || retryDelay > 300) {
+      showToast('مهلة الانتظار بين المحاولات يجب أن تكون بين 1 و 300 ثانية', 'error');
+      return;
+    }
+
+    setIsSavingDispatchSettings(true);
+    try {
+      const res = await restaurantAdminService.updateDispatchSettings({
+        offer_timeout_seconds: offerTimeout,
+        max_attempts: maxAttempts,
+        retry_delay_seconds: retryDelay,
+        fallback_to_restaurant_delivery: Boolean(dispatchForm.fallback_to_restaurant_delivery),
+      });
+
+      if (res.success && res.settings) {
+        setDispatchSettings(res.settings);
+        setDispatchForm({
+          offer_timeout_seconds: res.settings.offer_timeout_seconds,
+          max_attempts: res.settings.max_attempts,
+          retry_delay_seconds: res.settings.retry_delay_seconds,
+          fallback_to_restaurant_delivery: res.settings.fallback_to_restaurant_delivery,
+        });
+        showToast('تم حفظ إعدادات التوزيع الآلي بنجاح في قاعدة البيانات', 'success');
+      } else {
+        showToast(res.error || 'تعذر حفظ إعدادات التوزيع الآلي', 'error');
+      }
+    } catch (err: any) {
+      showToast(err?.message || 'حدث خطأ أثناء حفظ إعدادات التوزيع', 'error');
+    } finally {
+      setIsSavingDispatchSettings(false);
+    }
+  };
+
+  // =========================================================================
+  // CANCELLATION REQUESTS HANDLERS
+  // =========================================================================
+  const handleOpenCancellationDecision = (
+    request: RestaurantCancellationRequest,
+    approve: boolean
+  ) => {
+    if (!hasPermission('orders.manage') && !hasPermission('restaurants.manage')) {
+      showToast('ليس لديك صلاحية لاتخاذ قرار بشأن طلبات الإلغاء', 'error');
+      return;
+    }
+    setCancellationDecisionModal({ request, approve });
+    setCancellationDecisionReason('');
+  };
+
+  const handleSubmitCancellationDecision = async () => {
+    if (!cancellationDecisionModal) return;
+    const { request, approve } = cancellationDecisionModal;
+
+    if (!approve && !cancellationDecisionReason.trim()) {
+      showToast('يرجى كتابة سبب رفض طلب الإلغاء', 'error');
+      return;
+    }
+
+    setIsSubmittingCancellationDecision(true);
+    try {
+      const res = await restaurantAdminService.decideCancellationRequest(
+        request.id,
+        approve,
+        cancellationDecisionReason.trim() || undefined
+      );
+
+      if (res.success) {
+        showToast(
+          approve ? 'تمت الموافقة على طلب الإلغاء بنجاح' : 'تم رفض طلب الإلغاء بنجاح',
+          'success'
+        );
+        setCancellationDecisionModal(null);
+        setCancellationDecisionReason('');
+        loadCancellations();
+        loadOrders();
+        loadStats();
+      } else {
+        showToast(res.error || 'تعذر معالجة طلب الإلغاء', 'error');
+      }
+    } catch (err: any) {
+      showToast(err?.message || 'حدث خطأ أثناء معالجة طلب الإلغاء', 'error');
+    } finally {
+      setIsSubmittingCancellationDecision(false);
+    }
+  };
+
+  // =========================================================================
+  // ADMIN ORDER CANCELLATION (DIRECT) HANDLERS
+  // =========================================================================
+  const handleOpenAdminCancelModal = () => {
+    if (!activeOrderDetails) return;
+    if (!hasPermission('orders.manage') && !hasPermission('restaurants.manage')) {
+      showToast('ليس لديك صلاحية لإلغاء طلبات المطاعم', 'error');
+      return;
+    }
+    const terminalStatuses = ['delivered', 'cancelled', 'rejected'];
+    if (terminalStatuses.includes(activeOrderDetails.status)) {
+      showToast('لا يمكن إلغاء طلب منتهي أو مسلم أو تم إلغاؤه مسبقاً', 'error');
+      return;
+    }
+    setAdminCancelReason('');
+    setIsAdminCancelModalOpen(true);
+  };
+
+  const handleSubmitAdminCancel = async () => {
+    if (!activeOrderDetails) return;
+    if (!adminCancelReason.trim()) {
+      showToast('يرجى إدخال سبب الإلغاء الإداري للطلب', 'error');
+      return;
+    }
+
+    setIsSubmittingAdminCancel(true);
+    try {
+      const res = await restaurantAdminService.adminCancelOrder(
+        activeOrderDetails.id,
+        adminCancelReason.trim(),
+        activeOrderDetails.status
+      );
+
+      if (res.success) {
+        showToast('تم إلغاء طلب المطعم إدارياً بنجاح', 'success');
+        setIsAdminCancelModalOpen(false);
+        setAdminCancelReason('');
+        // Refresh active modal snapshot
+        setActiveOrderDetails((prev) =>
+          prev
+            ? {
+                ...prev,
+                status: 'cancelled',
+                cancellation_reason: adminCancelReason.trim(),
+              }
+            : null
+        );
+        loadOrders();
+        loadStats();
+      } else {
+        showToast(res.error || 'تعذر إلغاء الطلب إدارياً', 'error');
+      }
+    } catch (err: any) {
+      showToast(err?.message || 'حدث خطأ أثناء إلغاء الطلب', 'error');
+    } finally {
+      setIsSubmittingAdminCancel(false);
+    }
+  };
+
+  // =========================================================================
+  // DRIVER REASSIGNMENT HANDLERS
+  // =========================================================================
+  const handleOpenReassignModal = async () => {
+    if (!activeOrderDetails) return;
+    if (!hasPermission('orders.manage') && !hasPermission('restaurants.manage')) {
+      showToast('ليس لديك صلاحية لإعادة إسناد مندوب التوصيل', 'error');
+      return;
+    }
+    const terminalStatuses = ['delivered', 'cancelled', 'rejected'];
+    if (terminalStatuses.includes(activeOrderDetails.status)) {
+      showToast('لا يمكن إعادة إسناد مندوب لطلب في حالة منتهية', 'error');
+      return;
+    }
+    if (activeOrderDetails.fulfillment_route === 'restaurant_delivery') {
+      showToast('هذا الطلب مسند لتوصيل المطعم الذاتي وليس لمناديب المنصة', 'warning');
+      return;
+    }
+
+    setIsReassignModalOpen(true);
+    setIsReassignConfirmStep(false);
+    setSelectedNewDriverId('');
+    setReassignReason('');
+    setIsLoadingReassignableDrivers(true);
+
+    try {
+      const areaId = activeOrderDetails.delivery_area_id || undefined;
+      const res = await restaurantAdminService.listReassignableDrivers(areaId);
+      if (res.error) {
+        showToast(res.error, 'error');
+      }
+      setReassignableDrivers(res.drivers || []);
+    } catch (err: any) {
+      showToast(err?.message || 'حدث خطأ أثناء تحميل قائمة المناديب', 'error');
+    } finally {
+      setIsLoadingReassignableDrivers(false);
+    }
+  };
+
+  const handleSubmitReassign = async () => {
+    if (!activeOrderDetails) return;
+    if (!selectedNewDriverId) {
+      showToast('يرجى اختيار المندوب الجديد للإسناد', 'error');
+      return;
+    }
+    if (!reassignReason.trim()) {
+      showToast('يرجى إدخال سبب إعادة الإسناد', 'error');
+      return;
+    }
+
+    if (!isReassignConfirmStep) {
+      setIsReassignConfirmStep(true);
+      return;
+    }
+
+    setIsSubmittingReassignment(true);
+    try {
+      const orderSnapshot = {
+        status: activeOrderDetails.status,
+        fulfillment_route: activeOrderDetails.fulfillment_route,
+      };
+
+      const res = await restaurantAdminService.reassignDelivery(
+        activeOrderDetails.id,
+        selectedNewDriverId,
+        reassignReason.trim(),
+        orderSnapshot
+      );
+
+      if (res.success) {
+        showToast('تمت إعادة إسناد طلب التوصيل للمندوب بنجاح', 'success');
+        setIsReassignModalOpen(false);
+        setIsReassignConfirmStep(false);
+        setSelectedNewDriverId('');
+        setReassignReason('');
+        // Reload details to reflect updated delivery_order
+        handleOpenOrderDetails(activeOrderDetails.id);
+        loadOrders();
+        loadDelivery();
+      } else {
+        showToast(res.error || 'تعذر إعادة إسناد التوصيل', 'error');
+      }
+    } catch (err: any) {
+      showToast(err?.message || 'حدث خطأ أثناء إعادة الإسناد', 'error');
+    } finally {
+      setIsSubmittingReassignment(false);
     }
   };
 
@@ -1057,11 +1394,15 @@ export const AdminRestaurantManagement: React.FC = () => {
                   case 'restaurant_options': loadOptions(); break;
                   case 'restaurant_offers': loadOffers(); break;
                   case 'restaurant_orders': loadOrders(); break;
+                  case 'restaurant_cancellations': loadCancellations(); break;
                   case 'restaurant_delivery': loadDelivery(); break;
                   case 'restaurant_invoices': loadInvoices(); break;
                   case 'restaurant_settlements': loadSettlements(); break;
                   case 'restaurant_complaints': loadComplaints(); break;
-                  case 'restaurant_settings': loadSettingsAndHistory(); break;
+                  case 'restaurant_settings':
+                    loadSettingsAndHistory();
+                    loadDispatchSettings();
+                    break;
                 }
                 showToast('تم تحديث البيانات من قاعدة البيانات', 'info');
               }}
@@ -2240,6 +2581,188 @@ export const AdminRestaurantManagement: React.FC = () => {
       )}
 
       {/* =====================================================================
+          TAB: CANCELLATIONS (طلبات الإلغاء)
+          ===================================================================== */}
+      {currentTab === 'restaurant_cancellations' && (
+        <div className="space-y-4">
+          <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 bg-slate-900/60 border border-slate-800 p-4 rounded-2xl">
+            <div>
+              <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                <Ban className="w-4 h-4 text-rose-400" />
+                <span>إدارة طلبات إلغاء طلبات المطاعم</span>
+                <span className="text-[11px] px-2.5 py-0.5 rounded-full font-bold bg-rose-500/15 text-rose-300 border border-rose-500/30">
+                  {cancellationRequests.length} طلب
+                </span>
+              </h3>
+              <p className="text-[11px] text-slate-400 mt-1">
+                استعراض طلبات الإلغاء الواردة من المطاعم والعملاء واتخاذ القرار الإداري المباشر (موافقة أو رفض مبرر)
+              </p>
+            </div>
+
+            <div className="flex items-center gap-2 flex-wrap">
+              {/* Filter Tabs */}
+              <div className="flex items-center bg-slate-950 p-1 rounded-xl border border-slate-800 text-xs">
+                {(
+                  [
+                    { id: 'all', label: 'الكل' },
+                    { id: 'pending', label: 'قيد المراجعة' },
+                    { id: 'approved', label: 'مقبولة' },
+                    { id: 'rejected', label: 'مرفوضة' },
+                  ] as const
+                ).map((f) => (
+                  <button
+                    key={f.id}
+                    onClick={() => {
+                      setCancellationStatusFilter(f.id);
+                      loadCancellations(f.id);
+                    }}
+                    className={`px-3 py-1 rounded-lg font-bold transition cursor-pointer text-xs ${
+                      cancellationStatusFilter === f.id
+                        ? 'bg-amber-500 text-slate-950'
+                        : 'text-slate-400 hover:text-white'
+                    }`}
+                  >
+                    {f.label}
+                  </button>
+                ))}
+              </div>
+
+              <button
+                onClick={() => loadCancellations()}
+                className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-bold flex items-center gap-1.5 border border-slate-700 transition cursor-pointer"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${isLoadingCancellations ? 'animate-spin' : ''}`} />
+                <span>تحديث</span>
+              </button>
+            </div>
+          </div>
+
+          {isLoadingCancellations ? (
+            <div className="p-12 text-center text-slate-400 text-xs flex flex-col items-center gap-3">
+              <RefreshCw className="w-6 h-6 animate-spin text-amber-400" />
+              <span>جاري تحميل طلبات الإلغاء من قاعدة البيانات...</span>
+            </div>
+          ) : cancellationRequests.length === 0 ? (
+            <div className="p-12 text-center bg-slate-900/60 border border-slate-800 rounded-3xl space-y-3">
+              <CheckCircle2 className="w-12 h-12 text-emerald-500/60 mx-auto" />
+              <div className="text-sm font-bold text-slate-300">لا توجد طلبات إلغاء تطابق الفلتر المحدد</div>
+              <p className="text-xs text-slate-500 max-w-sm mx-auto">
+                جميع الطلبات في حالة طبيعية، أو لا توجد طلبات إلغاء جديدة مسجلة بالمنظومة.
+              </p>
+            </div>
+          ) : (
+            <div className="bg-slate-900/80 border border-slate-800 rounded-2xl overflow-hidden shadow-xl">
+              <div className="overflow-x-auto">
+                <table className="w-full text-right text-xs">
+                  <thead className="bg-slate-950/80 text-slate-400 font-bold border-b border-slate-800">
+                    <tr>
+                      <th className="py-3 px-4">رقم الطلب</th>
+                      <th className="py-3 px-4">المطعم</th>
+                      <th className="py-3 px-4">العميل</th>
+                      <th className="py-3 px-4">الجهة الطالبة</th>
+                      <th className="py-3 px-4">السبب المعلن</th>
+                      <th className="py-3 px-4">الحالة</th>
+                      <th className="py-3 px-4">تاريخ الطلب</th>
+                      <th className="py-3 px-4 text-center">الإجراءات</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-800/60">
+                    {cancellationRequests.map((req) => (
+                      <tr key={req.id} className="hover:bg-slate-800/40 transition">
+                        <td className="py-3 px-4 font-mono font-bold text-amber-400">
+                          {req.order_number || req.order_id.slice(0, 8)}
+                        </td>
+                        <td className="py-3 px-4 font-bold text-white">
+                          {req.restaurant_name || 'مطعم'}
+                        </td>
+                        <td className="py-3 px-4">
+                          <div className="font-bold text-slate-200">{req.customer_name || 'عميل'}</div>
+                          {req.customer_phone && (
+                            <div className="text-[11px] text-slate-400 font-mono" dir="ltr">
+                              {req.customer_phone}
+                            </div>
+                          )}
+                        </td>
+                        <td className="py-3 px-4">
+                          <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                            req.requester_type === 'restaurant'
+                              ? 'bg-amber-500/10 text-amber-300 border border-amber-500/30'
+                              : 'bg-blue-500/10 text-blue-300 border border-blue-500/30'
+                          }`}>
+                            {req.requester_type === 'restaurant' ? 'المطعم' : 'العميل'}
+                          </span>
+                        </td>
+                        <td className="py-3 px-4 text-slate-300 max-w-xs truncate" title={req.reason}>
+                          {req.reason}
+                        </td>
+                        <td className="py-3 px-4">
+                          <span
+                            className={`px-2.5 py-1 rounded-lg text-[10px] font-bold border inline-flex items-center gap-1 ${
+                              req.status === 'pending'
+                                ? 'bg-amber-500/15 text-amber-300 border-amber-500/30'
+                                : req.status === 'approved'
+                                ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30'
+                                : 'bg-rose-500/15 text-rose-300 border-rose-500/30'
+                            }`}
+                          >
+                            {req.status === 'pending' && <Clock className="w-3 h-3 text-amber-400" />}
+                            {req.status === 'approved' && <Check className="w-3 h-3 text-emerald-400" />}
+                            {req.status === 'rejected' && <X className="w-3 h-3 text-rose-400" />}
+                            <span>
+                              {req.status === 'pending'
+                                ? 'قيد المراجعة'
+                                : req.status === 'approved'
+                                ? 'تمت الموافقة'
+                                : 'مرفوض'}
+                            </span>
+                          </span>
+                        </td>
+                        <td className="py-3 px-4 text-slate-400 text-[11px]">
+                          {formatDate(req.created_at)}
+                        </td>
+                        <td className="py-3 px-4 text-center">
+                          <div className="flex items-center justify-center gap-1.5">
+                            <button
+                              onClick={() => setSelectedCancellationDetail(req)}
+                              className="px-2 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-bold transition cursor-pointer"
+                              title="عرض التفاصيل الكاملة"
+                            >
+                              <Eye className="w-3.5 h-3.5" />
+                            </button>
+
+                            {req.status === 'pending' && (
+                              <>
+                                <button
+                                  onClick={() => handleOpenCancellationDecision(req, true)}
+                                  className="px-2.5 py-1 rounded-lg bg-emerald-500/15 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/30 text-xs font-bold flex items-center gap-1 transition cursor-pointer"
+                                  title="الموافقة على الإلغاء"
+                                >
+                                  <Check className="w-3.5 h-3.5" />
+                                  <span>موافقة</span>
+                                </button>
+                                <button
+                                  onClick={() => handleOpenCancellationDecision(req, false)}
+                                  className="px-2.5 py-1 rounded-lg bg-rose-500/15 hover:bg-rose-500/30 text-rose-300 border border-rose-500/30 text-xs font-bold flex items-center gap-1 transition cursor-pointer"
+                                  title="رفض طلب الإلغاء"
+                                >
+                                  <X className="w-3.5 h-3.5" />
+                                  <span>رفض</span>
+                                </button>
+                              </>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* =====================================================================
           TAB 8: DELIVERY (عمليات التوصيل)
           ===================================================================== */}
       {currentTab === 'restaurant_delivery' && (
@@ -2900,6 +3423,207 @@ export const AdminRestaurantManagement: React.FC = () => {
           </div>
 
           {/* ===================================================================
+              AUTOMATED DISPATCH SETTINGS (public.restaurant_dispatch_settings)
+              =================================================================== */}
+          <div className="bg-slate-900/80 border border-slate-800 rounded-3xl p-5 space-y-4 shadow-xl">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-800 pb-3">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-2xl bg-amber-500/15 border border-amber-500/30 flex items-center justify-center text-amber-400 shrink-0">
+                  <Truck className="w-5 h-5" />
+                </div>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <h3 className="text-sm font-bold text-white">
+                      إعدادات التوزيع الآلي لمناديب المنصة
+                    </h3>
+                    <span className="text-[10px] px-2 py-0.5 rounded-full font-bold bg-amber-500/15 text-amber-300 border border-amber-500/30">
+                      restaurant_dispatch_settings
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-400 mt-0.5">
+                    ضبط معايير ومحددات دورة إسناد الطلبات لمناديب التوصيل ومسارات التحويل الاحتياطية
+                  </p>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={loadDispatchSettings}
+                className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold flex items-center gap-1.5 border border-slate-700 transition cursor-pointer self-start sm:self-center"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${isLoadingDispatchSettings ? 'animate-spin' : ''}`} />
+                <span>إعادة تحميل</span>
+              </button>
+            </div>
+
+            {isLoadingDispatchSettings ? (
+              <div className="p-8 text-center text-slate-400 text-xs flex flex-col items-center gap-2">
+                <RefreshCw className="w-5 h-5 animate-spin text-amber-400" />
+                <span>جاري تحميل إعدادات التوزيع الآلي...</span>
+              </div>
+            ) : (
+              <div className="space-y-4">
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                  {/* Field 1: Offer Timeout */}
+                  <div className="p-4 rounded-2xl bg-slate-950/70 border border-slate-800 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <label className="text-xs text-slate-300 font-bold block">
+                        مهلة عرض الطلب للمندوب *
+                      </label>
+                      <Clock className="w-3.5 h-3.5 text-amber-400" />
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="number"
+                        min="30"
+                        max="900"
+                        value={toInputNumber(dispatchForm.offer_timeout_seconds, 120)}
+                        onChange={(e) => {
+                          const v = e.target.value.trim();
+                          setDispatchForm((prev) => ({
+                            ...prev,
+                            offer_timeout_seconds: v === '' ? 120 : Number(v),
+                          }));
+                        }}
+                        className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white font-mono outline-none focus:border-amber-500"
+                      />
+                      <span className="text-xs text-slate-400 shrink-0 font-medium">ثانية</span>
+                    </div>
+                    <p className="text-[10px] text-slate-500 leading-relaxed">
+                      الحد الأدنى 30 ثانية والأقصى 900 ثانية (15 دقيقة) لقبول السائق.
+                    </p>
+                  </div>
+
+                  {/* Field 2: Max Attempts */}
+                  <div className="p-4 rounded-2xl bg-slate-950/70 border border-slate-800 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <label className="text-xs text-slate-300 font-bold block">
+                        الحد الأقصى للمحاولات *
+                      </label>
+                      <RotateCcw className="w-3.5 h-3.5 text-blue-400" />
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="number"
+                        min="1"
+                        max="20"
+                        value={toInputNumber(dispatchForm.max_attempts, 5)}
+                        onChange={(e) => {
+                          const v = e.target.value.trim();
+                          setDispatchForm((prev) => ({
+                            ...prev,
+                            max_attempts: v === '' ? 5 : Number(v),
+                          }));
+                        }}
+                        className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white font-mono outline-none focus:border-amber-500"
+                      />
+                      <span className="text-xs text-slate-400 shrink-0 font-medium">محاولات</span>
+                    </div>
+                    <p className="text-[10px] text-slate-500 leading-relaxed">
+                      الحد الأدنى محاولة واحدة والأقصى 20 محاولة للبحث عن سائقين.
+                    </p>
+                  </div>
+
+                  {/* Field 3: Retry Delay */}
+                  <div className="p-4 rounded-2xl bg-slate-950/70 border border-slate-800 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <label className="text-xs text-slate-300 font-bold block">
+                        الفاصل الزمني لإعادة المحاولة *
+                      </label>
+                      <Clock className="w-3.5 h-3.5 text-indigo-400" />
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="number"
+                        min="1"
+                        max="300"
+                        value={toInputNumber(dispatchForm.retry_delay_seconds, 5)}
+                        onChange={(e) => {
+                          const v = e.target.value.trim();
+                          setDispatchForm((prev) => ({
+                            ...prev,
+                            retry_delay_seconds: v === '' ? 5 : Number(v),
+                          }));
+                        }}
+                        className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white font-mono outline-none focus:border-amber-500"
+                      />
+                      <span className="text-xs text-slate-400 shrink-0 font-medium">ثانية</span>
+                    </div>
+                    <p className="text-[10px] text-slate-500 leading-relaxed">
+                      الحد الأدنى ثانية واحدة والأقصى 300 ثانية (5 دقائق) بين المحاولات.
+                    </p>
+                  </div>
+
+                  {/* Field 4: Fallback to Restaurant Delivery */}
+                  <div className="p-4 rounded-2xl bg-slate-950/70 border border-slate-800 space-y-2 flex flex-col justify-between">
+                    <div className="space-y-1">
+                      <div className="flex items-center justify-between">
+                        <label className="text-xs text-slate-300 font-bold block">
+                          التحويل لتوصيل المطعم الذاتي
+                        </label>
+                        <Bike className="w-3.5 h-3.5 text-emerald-400" />
+                      </div>
+                      <p className="text-[10px] text-slate-500 leading-relaxed">
+                        عند نفاد المحاولات دون سائق، يتم تحويل الطلب لتوصيل المطعم الذاتي بدلاً من إلغائه.
+                      </p>
+                    </div>
+
+                    <div className="pt-2 flex items-center justify-between">
+                      <span className={`text-xs font-bold ${
+                        dispatchForm.fallback_to_restaurant_delivery ? 'text-emerald-400' : 'text-slate-400'
+                      }`}>
+                        {dispatchForm.fallback_to_restaurant_delivery ? 'مفعّل (تحويل للمطعم)' : 'معطّل'}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setDispatchForm((prev) => ({
+                            ...prev,
+                            fallback_to_restaurant_delivery: !prev.fallback_to_restaurant_delivery,
+                          }))
+                        }
+                        className={`w-11 h-6 rounded-full transition p-1 flex items-center cursor-pointer ${
+                          dispatchForm.fallback_to_restaurant_delivery
+                            ? 'bg-emerald-500 justify-end'
+                            : 'bg-slate-800 justify-start'
+                        }`}
+                      >
+                        <span className="w-4 h-4 rounded-full bg-white shadow-md" />
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Save Dispatch Settings Action Bar */}
+                <div className="pt-3 border-t border-slate-800/80 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <div className="text-xs text-slate-400 flex items-center gap-2">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                    <span>
+                      {dispatchSettings?.updated_at
+                        ? `آخر تحديث مسجل: ${formatDate(dispatchSettings.updated_at)}`
+                        : 'يتم تطبيق الإعدادات فوراً على كافة عمليات التوزيع الجديدة عبر دالة النظام'}
+                    </span>
+                  </div>
+
+                  <button
+                    type="button"
+                    disabled={isSavingDispatchSettings}
+                    onClick={handleSaveDispatchSettings}
+                    className="px-5 py-2.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs flex items-center justify-center gap-2 transition shadow-lg shadow-amber-500/20 cursor-pointer disabled:opacity-50"
+                  >
+                    {isSavingDispatchSettings ? (
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                    ) : (
+                      <Save className="w-4 h-4" />
+                    )}
+                    <span>حفظ إعدادات التوزيع الآلي</span>
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* ===================================================================
               SECTION GEOGRAPHIC SERVICE AREAS (public.restaurant_section_service_areas)
               =================================================================== */}
           <div className="bg-slate-900/80 border border-slate-800 rounded-3xl p-5 space-y-5">
@@ -3312,6 +4036,99 @@ export const AdminRestaurantManagement: React.FC = () => {
               <div className="pt-2 border-t border-slate-800 flex justify-between text-sm font-black text-emerald-400">
                 <span>إجمالي العميل النهائي:</span>
                 <span>{formatCurrency(activeOrderDetails.customer_total)}</span>
+              </div>
+            </div>
+
+            {/* Administrative Operations Card (إلغاء الطلب وإعادة إسناد المندوب) */}
+            <div className="p-4 rounded-2xl bg-slate-950 border border-slate-800 space-y-3">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-850 pb-2.5">
+                <div className="flex items-center gap-2">
+                  <ShieldAlert className="w-4 h-4 text-amber-400" />
+                  <span className="text-xs font-bold text-white">العمليات الإدارية المباشرة على الطلب</span>
+                </div>
+
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span
+                    className={`px-2 py-0.5 rounded-lg text-[10px] font-bold border ${
+                      activeOrderDetails.fulfillment_route === 'restaurant_delivery'
+                        ? 'bg-amber-500/10 text-amber-300 border-amber-500/30'
+                        : 'bg-indigo-500/10 text-indigo-300 border-indigo-500/30'
+                    }`}
+                  >
+                    {activeOrderDetails.fulfillment_route === 'restaurant_delivery'
+                      ? 'توصيل المطعم الذاتي'
+                      : 'توصيل مناديب المنصة'}
+                  </span>
+
+                  <span className="px-2 py-0.5 rounded-lg text-[10px] font-bold bg-slate-850 text-slate-300 border border-slate-750">
+                    حالة الطلب: {activeOrderDetails.status}
+                  </span>
+                </div>
+              </div>
+
+              {/* Driver info if exists */}
+              {activeOrderDetails.delivery_order && (
+                <div className="p-2.5 rounded-xl bg-slate-900 border border-slate-800 flex items-center justify-between text-xs">
+                  <div className="flex items-center gap-2">
+                    <Bike className="w-4 h-4 text-amber-400" />
+                    <div>
+                      <span className="text-slate-400 text-[11px] block">مندوب التوصيل الحالي:</span>
+                      <span className="text-white font-bold">
+                        {activeOrderDetails.delivery_order.driver_name || 'سائق'}
+                      </span>
+                      {activeOrderDetails.delivery_order.driver_phone && (
+                        <span className="text-slate-400 font-mono text-[11px] mr-2" dir="ltr">
+                          ({activeOrderDetails.delivery_order.driver_phone})
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                  <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-800 text-slate-300">
+                    حالة التوصيل: {activeOrderDetails.delivery_order.status}
+                  </span>
+                </div>
+              )}
+
+              {/* Action Buttons Grid */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 pt-1">
+                {/* 1. Admin Cancel Button */}
+                {['delivered', 'cancelled', 'rejected'].includes(activeOrderDetails.status) ? (
+                  <div className="p-2.5 rounded-xl bg-slate-900/60 border border-slate-800/80 text-[11px] text-slate-500 flex items-center gap-2">
+                    <Ban className="w-3.5 h-3.5 text-slate-600 shrink-0" />
+                    <span>الطلب منتهي ({activeOrderDetails.status})، لا يمكن إلغاؤه إدارياً.</span>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={handleOpenAdminCancelModal}
+                    className="p-2.5 rounded-xl bg-rose-500/15 hover:bg-rose-500/25 border border-rose-500/30 text-rose-300 text-xs font-bold flex items-center justify-center gap-2 transition cursor-pointer"
+                  >
+                    <Ban className="w-4 h-4 text-rose-400" />
+                    <span>إلغاء الطلب إدارياً</span>
+                  </button>
+                )}
+
+                {/* 2. Reassign Driver Button */}
+                {['delivered', 'cancelled', 'rejected'].includes(activeOrderDetails.status) ? (
+                  <div className="p-2.5 rounded-xl bg-slate-900/60 border border-slate-800/80 text-[11px] text-slate-500 flex items-center gap-2">
+                    <RotateCcw className="w-3.5 h-3.5 text-slate-600 shrink-0" />
+                    <span>الطلب منتهي، لا يمكن إعادة إسناد سائق له.</span>
+                  </div>
+                ) : activeOrderDetails.fulfillment_route === 'restaurant_delivery' ? (
+                  <div className="p-2.5 rounded-xl bg-slate-900/60 border border-slate-800/80 text-[11px] text-amber-400/80 flex items-center gap-2">
+                    <AlertTriangle className="w-3.5 h-3.5 text-amber-500 shrink-0" />
+                    <span>مسند لتوصيل المطعم الذاتي (غير متاح لمناديب المنصة).</span>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={handleOpenReassignModal}
+                    className="p-2.5 rounded-xl bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/30 text-amber-300 text-xs font-bold flex items-center justify-center gap-2 transition cursor-pointer"
+                  >
+                    <RotateCcw className="w-4 h-4 text-amber-400" />
+                    <span>إعادة إسناد مندوب التوصيل</span>
+                  </button>
+                )}
               </div>
             </div>
 
@@ -5053,6 +5870,513 @@ export const AdminRestaurantManagement: React.FC = () => {
                 تأكيد الحل
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* =====================================================================
+          MODAL 1: CANCELLATION DECISION (موافقة أو رفض طلب الإلغاء)
+          ===================================================================== */}
+      {cancellationDecisionModal && (
+        <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-md flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-3xl max-w-md w-full p-6 space-y-4 shadow-2xl">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+              <div className="flex items-center gap-2.5">
+                <div
+                  className={`w-9 h-9 rounded-xl flex items-center justify-center ${
+                    cancellationDecisionModal.approve
+                      ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30'
+                      : 'bg-rose-500/15 text-rose-400 border border-rose-500/30'
+                  }`}
+                >
+                  {cancellationDecisionModal.approve ? (
+                    <CheckSquare className="w-5 h-5" />
+                  ) : (
+                    <XCircle className="w-5 h-5" />
+                  )}
+                </div>
+                <div>
+                  <h3 className="text-sm font-black text-white">
+                    {cancellationDecisionModal.approve
+                      ? 'اعتماد الموافقة على إلغاء الطلب'
+                      : 'رفض طلب إلغاء الطلب'}
+                  </h3>
+                  <span className="text-[11px] text-slate-400">
+                    طلب رقم: #{cancellationDecisionModal.request.order_number || cancellationDecisionModal.request.order_id.slice(0, 8)}
+                  </span>
+                </div>
+              </div>
+
+              <button
+                onClick={() => setCancellationDecisionModal(null)}
+                className="p-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-400 cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="space-y-3 text-xs">
+              <div className="p-3 bg-slate-950 border border-slate-800 rounded-xl space-y-1.5">
+                <div className="flex justify-between text-slate-400">
+                  <span>المطعم:</span>
+                  <span className="text-white font-bold">{cancellationDecisionModal.request.restaurant_name || 'مطعم'}</span>
+                </div>
+                <div className="flex justify-between text-slate-400">
+                  <span>العميل:</span>
+                  <span className="text-white font-bold">{cancellationDecisionModal.request.customer_name || 'عميل'}</span>
+                </div>
+                <div className="flex justify-between text-slate-400">
+                  <span>الجهة الطالبة:</span>
+                  <span className="text-amber-400 font-bold">
+                    {cancellationDecisionModal.request.requester_type === 'restaurant' ? 'المطعم' : 'العميل'}
+                  </span>
+                </div>
+                <div className="pt-1.5 border-t border-slate-850">
+                  <span className="text-slate-400 block mb-0.5">سبب طلب الإلغاء:</span>
+                  <span className="text-slate-200">{cancellationDecisionModal.request.reason}</span>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-slate-300 font-bold mb-1">
+                  {cancellationDecisionModal.approve
+                    ? 'ملاحظة الموافقة الإدارية (اختيارية):'
+                    : 'سبب الرفض الإداري الإلزامي *:'}
+                </label>
+                <textarea
+                  value={cancellationDecisionReason}
+                  onChange={(e) => setCancellationDecisionReason(e.target.value)}
+                  placeholder={
+                    cancellationDecisionModal.approve
+                      ? 'أدخل أي ملاحظات إدارية ترغب في توثيقها...'
+                      : 'وضح سبب رفض طلب الإلغاء للعميل/المطعم...'
+                  }
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-white outline-none focus:border-amber-500 h-24 text-xs"
+                />
+              </div>
+            </div>
+
+            <div className="pt-3 border-t border-slate-800 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setCancellationDecisionModal(null)}
+                className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-bold transition cursor-pointer"
+              >
+                إلغاء
+              </button>
+              <button
+                type="button"
+                disabled={
+                  isSubmittingCancellationDecision ||
+                  (!cancellationDecisionModal.approve && !cancellationDecisionReason.trim())
+                }
+                onClick={handleSubmitCancellationDecision}
+                className={`px-5 py-2 rounded-xl text-xs font-bold flex items-center gap-2 transition cursor-pointer disabled:opacity-50 ${
+                  cancellationDecisionModal.approve
+                    ? 'bg-emerald-500 hover:bg-emerald-400 text-slate-950 shadow-lg shadow-emerald-500/20'
+                    : 'bg-rose-500 hover:bg-rose-400 text-white shadow-lg shadow-rose-500/20'
+                }`}
+              >
+                {isSubmittingCancellationDecision ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : cancellationDecisionModal.approve ? (
+                  <Check className="w-4 h-4" />
+                ) : (
+                  <X className="w-4 h-4" />
+                )}
+                <span>{cancellationDecisionModal.approve ? 'تأكيد الموافقة' : 'تأكيد الرفض'}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* =====================================================================
+          MODAL 2: CANCELLATION DETAILS (عرض تفاصيل طلب الإلغاء)
+          ===================================================================== */}
+      {selectedCancellationDetail && (
+        <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-md flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-3xl max-w-lg w-full p-6 space-y-4 shadow-2xl">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+              <div>
+                <h3 className="text-sm font-black text-white">
+                  تفاصيل طلب الإلغاء #{selectedCancellationDetail.order_number || selectedCancellationDetail.order_id.slice(0, 8)}
+                </h3>
+                <span className="text-[11px] text-slate-400">
+                  تاريخ التسجيل: {formatDate(selectedCancellationDetail.created_at)}
+                </span>
+              </div>
+              <button
+                onClick={() => setSelectedCancellationDetail(null)}
+                className="p-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-400 cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="space-y-3 text-xs">
+              <div className="grid grid-cols-2 gap-2 p-3 bg-slate-950 border border-slate-800 rounded-xl">
+                <div>
+                  <span className="text-slate-400 block text-[11px]">المطعم:</span>
+                  <span className="text-white font-bold">{selectedCancellationDetail.restaurant_name || 'مطعم'}</span>
+                </div>
+                <div>
+                  <span className="text-slate-400 block text-[11px]">العميل:</span>
+                  <span className="text-white font-bold">{selectedCancellationDetail.customer_name || 'عميل'}</span>
+                  {selectedCancellationDetail.customer_phone && (
+                    <span className="text-slate-400 font-mono block text-[10px]" dir="ltr">
+                      {selectedCancellationDetail.customer_phone}
+                    </span>
+                  )}
+                </div>
+                <div>
+                  <span className="text-slate-400 block text-[11px]">الجهة الطالبة:</span>
+                  <span className="text-amber-400 font-bold">
+                    {selectedCancellationDetail.requester_type === 'restaurant' ? 'المطعم' : 'العميل'}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-slate-400 block text-[11px]">الحالة الحالية:</span>
+                  <span className="text-emerald-400 font-bold">{selectedCancellationDetail.status}</span>
+                </div>
+              </div>
+
+              <div className="p-3 bg-slate-950 border border-slate-800 rounded-xl space-y-1">
+                <span className="text-slate-400 font-bold block text-[11px]">سبب طلب الإلغاء:</span>
+                <p className="text-slate-200 leading-relaxed">{selectedCancellationDetail.reason}</p>
+              </div>
+
+              {/* Resolution details if decided */}
+              {selectedCancellationDetail.resolved_at && (
+                <div className="p-3 bg-slate-950 border border-slate-800 rounded-xl space-y-1.5">
+                  <span className="text-slate-400 font-bold block text-[11px]">بيانات القرار الإداري:</span>
+                  <div className="flex justify-between text-slate-300">
+                    <span>تاريخ اتخاذ القرار:</span>
+                    <span>{formatDate(selectedCancellationDetail.resolved_at)}</span>
+                  </div>
+                  {selectedCancellationDetail.decision_note && (
+                    <div className="pt-1 border-t border-slate-850">
+                      <span className="text-slate-400 block text-[11px]">ملاحظة الإدارة:</span>
+                      <span className="text-slate-200">{selectedCancellationDetail.decision_note}</span>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+
+            <div className="pt-3 border-t border-slate-800 flex justify-end">
+              <button
+                type="button"
+                onClick={() => setSelectedCancellationDetail(null)}
+                className="px-5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-bold transition cursor-pointer"
+              >
+                إغلاق
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* =====================================================================
+          MODAL 3: ADMIN ORDER DIRECT CANCEL (إلغاء الطلب إدارياً)
+          ===================================================================== */}
+      {isAdminCancelModalOpen && activeOrderDetails && (
+        <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-md flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-3xl max-w-md w-full p-6 space-y-4 shadow-2xl">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-xl bg-rose-500/15 border border-rose-500/30 flex items-center justify-center text-rose-400">
+                  <Ban className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-black text-white">إلغاء طلب المطعم إدارياً</h3>
+                  <span className="text-[11px] text-slate-400 font-mono">
+                    #{activeOrderDetails.order_number}
+                  </span>
+                </div>
+              </div>
+
+              <button
+                onClick={() => setIsAdminCancelModalOpen(false)}
+                className="p-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-400 cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="p-3 bg-rose-500/10 border border-rose-500/30 rounded-2xl flex items-start gap-2.5 text-xs text-rose-200">
+              <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+              <p className="leading-relaxed">
+                تحذير: سيتم إلغاء هذا الطلب مباشرة وتغيير حالته إلى (cancelled) في قاعدة البيانات مع توثيق السبب الإداري في السجل التاريخي.
+              </p>
+            </div>
+
+            <div className="space-y-3 text-xs">
+              <div className="p-3 bg-slate-950 border border-slate-800 rounded-xl space-y-1">
+                <div className="flex justify-between text-slate-400">
+                  <span>العميل:</span>
+                  <span className="text-white font-bold">{activeOrderDetails.customer_name}</span>
+                </div>
+                <div className="flex justify-between text-slate-400">
+                  <span>المطعم:</span>
+                  <span className="text-white font-bold">{activeOrderDetails.restaurant_name_snapshot || 'مطعم'}</span>
+                </div>
+                <div className="flex justify-between text-slate-400">
+                  <span>إجمالي الطلب:</span>
+                  <span className="text-emerald-400 font-bold font-mono">{formatCurrency(activeOrderDetails.customer_total)}</span>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-slate-300 font-bold mb-1">
+                  سبب الإلغاء الإداري الإلزامي *
+                </label>
+                <textarea
+                  value={adminCancelReason}
+                  onChange={(e) => setAdminCancelReason(e.target.value)}
+                  placeholder="اكتب سبب الإلغاء الإداري بالتفصيل..."
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-white outline-none focus:border-rose-500 h-24 text-xs"
+                />
+              </div>
+            </div>
+
+            <div className="pt-3 border-t border-slate-800 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setIsAdminCancelModalOpen(false)}
+                className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-bold transition cursor-pointer"
+              >
+                تراجع
+              </button>
+              <button
+                type="button"
+                disabled={isSubmittingAdminCancel || !adminCancelReason.trim()}
+                onClick={handleSubmitAdminCancel}
+                className="px-5 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold flex items-center gap-2 transition cursor-pointer disabled:opacity-50 shadow-lg shadow-rose-600/20"
+              >
+                {isSubmittingAdminCancel ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : (
+                  <Ban className="w-4 h-4" />
+                )}
+                <span>تأكيد الإلغاء الإداري</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* =====================================================================
+          MODAL 4: DRIVER REASSIGNMENT (إعادة إسناد مندوب التوصيل)
+          ===================================================================== */}
+      {isReassignModalOpen && activeOrderDetails && (
+        <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-md flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-3xl max-w-lg w-full p-6 space-y-4 shadow-2xl max-h-[92vh] overflow-y-auto">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-xl bg-amber-500/15 border border-amber-500/30 flex items-center justify-center text-amber-400">
+                  <RotateCcw className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-black text-white">إعادة إسناد مندوب التوصيل</h3>
+                  <span className="text-[11px] text-slate-400 font-mono">
+                    طلب رقم: #{activeOrderDetails.order_number}
+                  </span>
+                </div>
+              </div>
+
+              <button
+                onClick={() => setIsReassignModalOpen(false)}
+                className="p-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-400 cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {!isReassignConfirmStep ? (
+              // Step 1: Selection
+              <div className="space-y-4 text-xs">
+                {/* Current assignment snapshot */}
+                <div className="p-3 bg-slate-950 border border-slate-800 rounded-2xl space-y-1.5">
+                  <div className="flex justify-between text-slate-400">
+                    <span>المندوب الحالي:</span>
+                    <span className="text-white font-bold">
+                      {activeOrderDetails.delivery_order?.driver_name || 'غير مسند لمندوب'}
+                    </span>
+                  </div>
+                  <div className="flex justify-between text-slate-400">
+                    <span>منطقة التوصيل:</span>
+                    <span className="text-amber-300 font-bold">
+                      {activeOrderDetails.delivery_area_name_snapshot || 'غير محددة'}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Eligible Drivers List */}
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <label className="text-xs text-slate-300 font-bold block">
+                      اختر المندوب الجديد للإسناد *
+                    </label>
+                    <span className="text-[11px] text-slate-400">
+                      ({reassignableDrivers.length} مندوب متاح)
+                    </span>
+                  </div>
+
+                  {isLoadingReassignableDrivers ? (
+                    <div className="p-6 text-center text-slate-400 text-xs flex flex-col items-center gap-2 bg-slate-950 rounded-2xl border border-slate-800">
+                      <RefreshCw className="w-5 h-5 animate-spin text-amber-400" />
+                      <span>جاري جلب المناديب المتاحين في النطاق...</span>
+                    </div>
+                  ) : reassignableDrivers.length === 0 ? (
+                    <div className="p-5 text-center bg-slate-950 border border-slate-800 rounded-2xl text-slate-400 text-xs space-y-1">
+                      <AlertCircle className="w-6 h-6 text-amber-400 mx-auto mb-1" />
+                      <div className="font-bold text-slate-300">لا يوجد مناديب متاحون في نطاق التوصيل</div>
+                      <p className="text-[11px] text-slate-500">
+                        تأكد من وجود سائقين نشطين بالمنطقة أو تحقق من جدول السائقين.
+                      </p>
+                    </div>
+                  ) : (
+                    <div className="max-h-48 overflow-y-auto space-y-1.5 p-1 bg-slate-950 border border-slate-800 rounded-2xl">
+                      {reassignableDrivers.map((driver) => {
+                        const isSelected = selectedNewDriverId === driver.id;
+                        return (
+                          <div
+                            key={driver.id}
+                            onClick={() => setSelectedNewDriverId(driver.id)}
+                            className={`p-3 rounded-xl border flex items-center justify-between cursor-pointer transition ${
+                              isSelected
+                                ? 'bg-amber-500/15 border-amber-500/50 text-white'
+                                : 'bg-slate-900/60 border-slate-800/80 hover:bg-slate-850 text-slate-300'
+                            }`}
+                          >
+                            <div className="flex items-center gap-2.5">
+                              <div
+                                className={`w-7 h-7 rounded-lg flex items-center justify-center text-xs font-bold ${
+                                  isSelected ? 'bg-amber-500 text-slate-950' : 'bg-slate-800 text-slate-400'
+                                }`}
+                              >
+                                <Bike className="w-3.5 h-3.5" />
+                              </div>
+                              <div>
+                                <div className="font-bold text-xs text-white">{driver.full_name}</div>
+                                <div className="text-[10px] text-slate-400 font-mono" dir="ltr">
+                                  {driver.phone}
+                                </div>
+                              </div>
+                            </div>
+
+                            <div className="text-left text-[11px]">
+                              {driver.vehicle_type && (
+                                <span className="px-2 py-0.5 rounded bg-slate-800 text-slate-300 ml-1">
+                                  {driver.vehicle_type}
+                                </span>
+                              )}
+                              <span className="text-slate-400 text-[10px]">
+                                {driver.active_orders_count !== undefined
+                                  ? `${driver.active_orders_count} طلب حالي`
+                                  : 'متاح'}
+                              </span>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+
+                {/* Reason Textarea */}
+                <div>
+                  <label className="block text-slate-300 font-bold mb-1">
+                    سبب إعادة الإسناد الإلزامي *
+                  </label>
+                  <textarea
+                    value={reassignReason}
+                    onChange={(e) => setReassignReason(e.target.value)}
+                    placeholder="اكتب سبب إعادة الإسناد (مثل: تأخر السائق، تعطل وسيلة النقل، إلغاء السائق)..."
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-white outline-none focus:border-amber-500 h-20 text-xs"
+                  />
+                </div>
+
+                <div className="pt-2 border-t border-slate-800 flex items-center justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setIsReassignModalOpen(false)}
+                    className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-bold transition cursor-pointer"
+                  >
+                    إلغاء
+                  </button>
+                  <button
+                    type="button"
+                    disabled={!selectedNewDriverId || !reassignReason.trim()}
+                    onClick={handleSubmitReassign}
+                    className="px-5 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-bold flex items-center gap-1.5 transition cursor-pointer disabled:opacity-50 shadow-lg shadow-amber-500/20"
+                  >
+                    <span>متابعة وتأكيد</span>
+                    <ArrowRight className="w-4 h-4 rotate-180" />
+                  </button>
+                </div>
+              </div>
+            ) : (
+              // Step 2: Confirmation Summary
+              <div className="space-y-4 text-xs">
+                <div className="p-3.5 bg-amber-500/10 border border-amber-500/30 rounded-2xl text-amber-200 flex items-start gap-2.5">
+                  <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+                  <p className="leading-relaxed text-[11px]">
+                    يرجى مراجعة بيانات إعادة الإسناد بعناية قبل التنفيذ. سيتم تحويل الطلب فوراً للمندوب الجديد وتحديث منظومة التوصيل.
+                  </p>
+                </div>
+
+                <div className="p-4 bg-slate-950 border border-slate-800 rounded-2xl space-y-2.5">
+                  <div className="flex justify-between border-b border-slate-850 pb-2">
+                    <span className="text-slate-400">رقم الطلب:</span>
+                    <span className="text-amber-400 font-bold font-mono">#{activeOrderDetails.order_number}</span>
+                  </div>
+                  <div className="flex justify-between border-b border-slate-850 pb-2">
+                    <span className="text-slate-400">المندوب الحالي:</span>
+                    <span className="text-rose-400 font-bold">
+                      {activeOrderDetails.delivery_order?.driver_name || 'غير مسند'}
+                    </span>
+                  </div>
+                  <div className="flex justify-between border-b border-slate-850 pb-2">
+                    <span className="text-slate-400">المندوب الجديد:</span>
+                    <span className="text-emerald-400 font-bold">
+                      {reassignableDrivers.find((d) => d.id === selectedNewDriverId)?.full_name || selectedNewDriverId}
+                    </span>
+                  </div>
+                  <div className="pt-1">
+                    <span className="text-slate-400 block mb-1">سبب إعادة الإسناد:</span>
+                    <span className="text-slate-200 bg-slate-900 p-2.5 rounded-xl block border border-slate-800">
+                      {reassignReason}
+                    </span>
+                  </div>
+                </div>
+
+                <div className="pt-2 border-t border-slate-800 flex items-center justify-between gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setIsReassignConfirmStep(false)}
+                    className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-bold transition cursor-pointer"
+                  >
+                    رجوع للتعديل
+                  </button>
+
+                  <button
+                    type="button"
+                    disabled={isSubmittingReassignment}
+                    onClick={handleSubmitReassign}
+                    className="px-5 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-xs font-bold flex items-center gap-2 transition cursor-pointer disabled:opacity-50 shadow-lg shadow-emerald-500/20"
+                  >
+                    {isSubmittingReassignment ? (
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                    ) : (
+                      <UserCheck className="w-4 h-4" />
+                    )}
+                    <span>تأكيد إعادة الإسناد والتنفيذ</span>
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}
