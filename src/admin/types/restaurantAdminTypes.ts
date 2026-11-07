@@ -446,3 +446,53 @@ export interface RestaurantOverviewStats {
   activeOffers: number;
   pendingSettlements: number;
 }
+
+// ============================================================================
+// RESTAURANT DISPATCH SETTINGS, CANCELLATION & REASSIGNMENT TYPES
+// ============================================================================
+
+export interface RestaurantDispatchSettings {
+  id?: string;
+  offer_timeout_seconds: number;
+  max_attempts: number;
+  retry_delay_seconds: number;
+  fallback_to_restaurant_delivery: boolean;
+  updated_at?: string;
+}
+
+export type RestaurantCancellationStatus = 'pending' | 'approved' | 'rejected' | string;
+
+export interface RestaurantCancellationRequest {
+  id: string;
+  order_id: string;
+  order_number?: string;
+  customer_name?: string;
+  customer_phone?: string;
+  restaurant_id?: string;
+  restaurant_name?: string;
+  reason: string;
+  status: RestaurantCancellationStatus;
+  requested_by?: string | null;
+  created_at: string;
+  updated_at?: string;
+  decided_at?: string | null;
+  decided_by?: string | null;
+  decision_reason?: string | null;
+}
+
+export interface ReassignableDriver {
+  id?: string;
+  driver_id?: string;
+  driver_user_id?: string;
+  name?: string;
+  full_name?: string;
+  phone?: string;
+  vehicle_type?: string | null;
+  is_active?: boolean;
+  is_online?: boolean;
+  current_active_orders?: number;
+  assigned_area_id?: string | null;
+  assigned_area_name?: string | null;
+  [key: string]: any;
+}
+

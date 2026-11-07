@@ -36,6 +36,9 @@ import {
   RestaurantServiceArea,
   RestaurantSectionServiceArea,
   RestaurantAreaDeliveryFee,
+  RestaurantDispatchSettings,
+  RestaurantCancellationRequest,
+  ReassignableDriver,
 } from '../types/restaurantAdminTypes';
 
 export const restaurantAdminService = {
@@ -2863,6 +2866,330 @@ export const restaurantAdminService = {
       return { success: true };
     } catch (err: any) {
       return { success: false, error: err?.message || 'تعذر حذف نطاق تشغيل القسم' };
+    }
+  },
+
+  // ==========================================================================
+  // 17. RESTAURANT DISPATCH SETTINGS RPC (admin_get_restaurant_dispatch_settings & admin_update_restaurant_dispatch_settings)
+  // ==========================================================================
+  async getDispatchSettings(): Promise<{
+    settings: RestaurantDispatchSettings | null;
+    error?: string;
+  }> {
+    if (!supabase || !isSupabaseConfigured) {
+      return { settings: null, error: 'Supabase غير متصل' };
+    }
+    try {
+      const { data, error } = await supabase.rpc('admin_get_restaurant_dispatch_settings');
+      if (error) {
+        return { settings: null, error: `فشل قراءة إعدادات التوزيع: ${error.message}` };
+      }
+
+      const record = Array.isArray(data) ? data[0] : data;
+      if (!record) {
+        return { settings: null, error: 'لم يتم العثور على سجل إعدادات التوزيع' };
+      }
+
+      return {
+        settings: {
+          id: record.id,
+          offer_timeout_seconds: Number(record.offer_timeout_seconds ?? 120),
+          max_attempts: Number(record.max_attempts ?? 5),
+          retry_delay_seconds: Number(record.retry_delay_seconds ?? 5),
+          fallback_to_restaurant_delivery: Boolean(record.fallback_to_restaurant_delivery),
+          updated_at: record.updated_at,
+        },
+      };
+    } catch (err: any) {
+      return { settings: null, error: err?.message || 'تعذر قراءة إعدادات التوزيع' };
+    }
+  },
+
+  async updateDispatchSettings(settings: {
+    offer_timeout_seconds: number;
+    max_attempts: number;
+    retry_delay_seconds: number;
+    fallback_to_restaurant_delivery: boolean;
+  }): Promise<{
+    success: boolean;
+    settings?: RestaurantDispatchSettings | null;
+    error?: string;
+  }> {
+    if (!supabase || !isSupabaseConfigured) {
+      return { success: false, error: 'Supabase غير متصل' };
+    }
+
+    const timeout = Number(settings.offer_timeout_seconds);
+    const maxAttempts = Number(settings.max_attempts);
+    const retryDelay = Number(settings.retry_delay_seconds);
+    const fallback = Boolean(settings.fallback_to_restaurant_delivery);
+
+    // Validation against operational constraints:
+    // - المهلة من 30 إلى 900 ثانية
+    // - عدد المحاولات من 1 إلى 20
+    // - التأخير من 1 إلى 300 ثانية
+    // - التحويل التلقائي قيمة Boolean
+    if (isNaN(timeout) || timeout < 30 || timeout > 900) {
+      return {
+        success: false,
+        error: 'مهلة عرض الطلب للسائق يجب أن تكون بين 30 و 900 ثانية',
+      };
+    }
+    if (isNaN(maxAttempts) || maxAttempts < 1 || maxAttempts > 20) {
+      return {
+        success: false,
+        error: 'الحد الأقصى لمحاولات التوزيع يجب أن يكون بين 1 و 20 محاولة',
+      };
+    }
+    if (isNaN(retryDelay) || retryDelay < 1 || retryDelay > 300) {
+      return {
+        success: false,
+        error: 'التأخير بين المحاولات يجب أن يكون بين 1 و 300 ثانية',
+      };
+    }
+
+    try {
+      const { data, error } = await supabase.rpc('admin_update_restaurant_dispatch_settings', {
+        p_offer_timeout_seconds: timeout,
+        p_max_attempts: maxAttempts,
+        p_retry_delay_seconds: retryDelay,
+        p_fallback_to_restaurant_delivery: fallback,
+      });
+
+      if (error) {
+        return { success: false, error: `فشل تحديث إعدادات التوزيع: ${error.message}` };
+      }
+
+      const record = Array.isArray(data) ? data[0] : data;
+      const updatedSettings: RestaurantDispatchSettings = record
+        ? {
+            id: record.id,
+            offer_timeout_seconds: Number(record.offer_timeout_seconds ?? timeout),
+            max_attempts: Number(record.max_attempts ?? maxAttempts),
+            retry_delay_seconds: Number(record.retry_delay_seconds ?? retryDelay),
+            fallback_to_restaurant_delivery: Boolean(
+              record.fallback_to_restaurant_delivery ?? fallback
+            ),
+            updated_at: record.updated_at,
+          }
+        : {
+            offer_timeout_seconds: timeout,
+            max_attempts: maxAttempts,
+            retry_delay_seconds: retryDelay,
+            fallback_to_restaurant_delivery: fallback,
+          };
+
+      return { success: true, settings: updatedSettings };
+    } catch (err: any) {
+      return { success: false, error: err?.message || 'تعذر تحديث إعدادات التوزيع' };
+    }
+  },
+
+  // ==========================================================================
+  // 18. RESTAURANT CANCELLATIONS RPC (admin_list_restaurant_cancellation_requests & restaurant_decide_cancellation)
+  // ==========================================================================
+  async listCancellationRequests(status?: string): Promise<{
+    requests: RestaurantCancellationRequest[];
+    error?: string;
+  }> {
+    if (!supabase || !isSupabaseConfigured) {
+      return { requests: [], error: 'Supabase غير متصل' };
+    }
+    try {
+      const rpcArgs: Record<string, any> = {};
+      if (status && status !== 'all') {
+        rpcArgs.p_status = status.trim();
+      }
+
+      const { data, error } = await supabase.rpc(
+        'admin_list_restaurant_cancellation_requests',
+        rpcArgs
+      );
+
+      if (error) {
+        return { requests: [], error: `فشل جلب طلبات الإلغاء: ${error.message}` };
+      }
+
+      return { requests: (data || []) as RestaurantCancellationRequest[] };
+    } catch (err: any) {
+      return { requests: [], error: err?.message || 'تعذر جلب طلبات الإلغاء' };
+    }
+  },
+
+  async decideCancellationRequest(
+    requestId: string,
+    approve: boolean,
+    reason: string
+  ): Promise<{ success: boolean; error?: string }> {
+    if (!supabase || !isSupabaseConfigured) {
+      return { success: false, error: 'Supabase غير متصل' };
+    }
+    const cleanRequestId = requestId?.trim();
+    if (!cleanRequestId) {
+      return { success: false, error: 'معرف طلب الإلغاء مطلوب' };
+    }
+
+    const cleanReason = reason?.trim();
+    if (!approve && !cleanReason) {
+      return { success: false, error: 'يرجى كتابة سبب أو ملاحظة توضح قرار رفض الإلغاء' };
+    }
+
+    try {
+      const { data, error } = await supabase.rpc('restaurant_decide_cancellation', {
+        p_request_id: cleanRequestId,
+        p_approve: Boolean(approve),
+        p_reason: cleanReason || (approve ? 'موافقة الإدارة على طلب الإلغاء' : ''),
+      });
+
+      if (error) {
+        return { success: false, error: `فشل تنفيذ قرار الإلغاء: ${error.message}` };
+      }
+
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err?.message || 'تعذر تنفيذ قرار الإلغاء' };
+    }
+  },
+
+  // ==========================================================================
+  // 19. ADMIN ORDER CANCELLATION RPC (admin_cancel_restaurant_order)
+  // ==========================================================================
+  async adminCancelOrder(
+    orderId: string,
+    reason: string,
+    currentStatus?: string
+  ): Promise<{ success: boolean; error?: string }> {
+    if (!supabase || !isSupabaseConfigured) {
+      return { success: false, error: 'Supabase غير متصل' };
+    }
+    const cleanOrderId = orderId?.trim();
+    if (!cleanOrderId) {
+      return { success: false, error: 'معرف الطلب مطلوب' };
+    }
+
+    const cleanReason = reason?.trim();
+    if (!cleanReason) {
+      return { success: false, error: 'يرجى كتابة سبب واضح للإلغاء الإداري' };
+    }
+
+    // Guard: Terminal statuses cannot be cancelled
+    const terminalStatuses = ['delivered', 'cancelled', 'rejected'];
+    if (currentStatus && terminalStatuses.includes(currentStatus.toLowerCase())) {
+      return {
+        success: false,
+        error: `لا يمكن إلغاء الطلب لأنه في حالة نهائية (${currentStatus})`,
+      };
+    }
+
+    try {
+      const { data, error } = await supabase.rpc('admin_cancel_restaurant_order', {
+        p_order_id: cleanOrderId,
+        p_reason: cleanReason,
+      });
+
+      if (error) {
+        return { success: false, error: `فشل إلغاء الطلب إدارياً: ${error.message}` };
+      }
+
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err?.message || 'تعذر إلغاء الطلب إدارياً' };
+    }
+  },
+
+  // ==========================================================================
+  // 20. DRIVER REASSIGNMENT RPC (admin_list_reassignable_drivers & admin_reassign_restaurant_delivery)
+  // ==========================================================================
+  async listReassignableDrivers(areaId: string): Promise<{
+    drivers: ReassignableDriver[];
+    error?: string;
+  }> {
+    if (!supabase || !isSupabaseConfigured) {
+      return { drivers: [], error: 'Supabase غير متصل' };
+    }
+    const cleanAreaId = areaId?.trim();
+    if (!cleanAreaId) {
+      return {
+        drivers: [],
+        error: 'معرف المنطقة الجغرافية (area_id) مطلوب لجلب السائقين المؤهلين',
+      };
+    }
+
+    try {
+      const { data, error } = await supabase.rpc('admin_list_reassignable_drivers', {
+        p_area_id: cleanAreaId,
+      });
+
+      if (error) {
+        return { drivers: [], error: `فشل جلب قائمة السائقين المؤهلين: ${error.message}` };
+      }
+
+      return { drivers: (data || []) as ReassignableDriver[] };
+    } catch (err: any) {
+      return { drivers: [], error: err?.message || 'تعذر جلب قائمة السائقين' };
+    }
+  },
+
+  async reassignDelivery(
+    orderId: string,
+    newDriverId: string,
+    reason: string,
+    orderSnapshot?: { status?: string; fulfillment_route?: string | null }
+  ): Promise<{ success: boolean; error?: string }> {
+    if (!supabase || !isSupabaseConfigured) {
+      return { success: false, error: 'Supabase غير متصل' };
+    }
+    const cleanOrderId = orderId?.trim();
+    if (!cleanOrderId) {
+      return { success: false, error: 'معرف الطلب مطلوب' };
+    }
+    const cleanDriverId = newDriverId?.trim();
+    if (!cleanDriverId) {
+      return { success: false, error: 'يرجى اختيار السائق الجديد لإعادة الإسناد' };
+    }
+    const cleanReason = reason?.trim();
+    if (!cleanReason) {
+      return { success: false, error: 'يرجى كتابة سبب إعادة إسناد الطلب' };
+    }
+
+    // Constraints validation:
+    // 1. Fulfillment route must be driver_delivery if snapshot is provided
+    if (
+      orderSnapshot?.fulfillment_route &&
+      orderSnapshot.fulfillment_route !== 'driver_delivery'
+    ) {
+      return {
+        success: false,
+        error: 'إعادة إسناد التوصيل مخصصة فقط للطلبات على مسار دليفري المنصة (driver_delivery)',
+      };
+    }
+
+    // 2. Terminal orders cannot be reassigned
+    const terminalStatuses = ['delivered', 'cancelled', 'rejected'];
+    if (
+      orderSnapshot?.status &&
+      terminalStatuses.includes(orderSnapshot.status.toLowerCase())
+    ) {
+      return {
+        success: false,
+        error: `لا يمكن إعادة إسناد طلب في حالة نهائية (${orderSnapshot.status})`,
+      };
+    }
+
+    try {
+      const { data, error } = await supabase.rpc('admin_reassign_restaurant_delivery', {
+        p_order_id: cleanOrderId,
+        p_new_driver_id: cleanDriverId,
+        p_reason: cleanReason,
+      });
+
+      if (error) {
+        return { success: false, error: `فشل إعادة إسناد الطلب للسائق: ${error.message}` };
+      }
+
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err?.message || 'تعذر إعادة إسناد الطلب' };
     }
   },
 };
