@@ -242,8 +242,11 @@ export interface AdminSectionFilter {
 export interface OperationalAssignedOrderSummary {
   id: string;
   order_number: string;
-  source: 'delivery' | 'pharmacy';
+  source: 'delivery' | 'pharmacy' | 'restaurant';
+  restaurant_name?: string | null;
   customer_name: string;
+  customer_phone?: string | null;
+  delivery_address?: string | null;
   governorate_name?: string | null;
   status: string;
   driver_id: string;
@@ -256,8 +259,10 @@ export interface OperationalAssignedOrderSummary {
 export interface OperationalPendingOrderSummary {
   id: string;
   order_number: string;
-  source: 'delivery' | 'pharmacy';
+  source: 'delivery' | 'pharmacy' | 'restaurant';
+  restaurant_name?: string | null;
   customer_name: string;
+  customer_phone?: string | null;
   governorate_name?: string | null;
   status: string;
   total_amount?: number | null;
@@ -266,12 +271,21 @@ export interface OperationalPendingOrderSummary {
 
 export interface OperationalCancellationSummary {
   id: string;
+  order_id?: string;
+  request_id?: string;
   order_number: string;
-  source: 'delivery' | 'pharmacy';
+  source: 'delivery' | 'pharmacy' | 'restaurant';
   customer_name: string;
+  customer_phone?: string | null;
+  restaurant_name?: string | null;
   driver_name?: string | null;
   reason?: string | null;
   requested_at?: string | null;
+  requester_type?: 'customer' | 'driver' | 'restaurant' | string | null;
+  requester_name?: string | null;
+  requester_phone?: string | null;
+  fulfillment_route?: string | null;
+  order_status?: string | null;
 }
 
 export interface OperationalDriverApplicationSummary {
@@ -306,12 +320,16 @@ export interface OperationalCommandCenterData {
   counts: {
     delivery_pending_review: number;
     pharmacy_pending_review: number;
+    restaurant_pending_review: number;
     delivery_cancellation_pending: number;
     pharmacy_cancellation_pending: number;
+    restaurant_cancellation_pending: number;
     delivery_assigned_active: number;
     pharmacy_assigned_active: number;
+    restaurant_assigned_active: number;
     delivery_completed: number;
     pharmacy_completed: number;
+    restaurant_completed: number;
     drivers_pending_approval: number;
     drivers_inactive: number;
     users_blocked: number;

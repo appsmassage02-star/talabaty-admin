@@ -22,8 +22,9 @@ import {
   PharmacySavedPrescription,
   PharmacyOrderFile,
 } from '../types';
+import { supabase } from '../../lib/supabase';
 import { restaurantAdminService } from '../services/restaurantAdminService';
-import { RestaurantOverviewStats } from '../types/restaurantAdminTypes';
+import { RestaurantOverviewStats, RestaurantOrder } from '../types/restaurantAdminTypes';
 import {
   Users,
   Receipt,
@@ -142,15 +143,21 @@ export const AdminOverview: React.FC = () => {
   const canManageRestaurants = hasPermission('restaurants.manage');
 
   const canViewOrderBySource = useCallback(
-    (source: 'delivery' | 'pharmacy') =>
-      source === 'delivery' ? canViewDeliveryOrders : canViewPharmacyOrders,
-    [canViewDeliveryOrders, canViewPharmacyOrders]
+    (source: 'delivery' | 'pharmacy' | 'restaurant') => {
+      if (source === 'delivery') return canViewDeliveryOrders;
+      if (source === 'pharmacy') return canViewPharmacyOrders;
+      return canViewRestaurants;
+    },
+    [canViewDeliveryOrders, canViewPharmacyOrders, canViewRestaurants]
   );
 
   const canDecideCancelBySource = useCallback(
-    (source: 'delivery' | 'pharmacy') =>
-      source === 'delivery' ? canManageDeliveryOrders : canManagePharmacyOrders,
-    [canManageDeliveryOrders, canManagePharmacyOrders]
+    (source: 'delivery' | 'pharmacy' | 'restaurant') => {
+      if (source === 'delivery') return canManageDeliveryOrders;
+      if (source === 'pharmacy') return canManagePharmacyOrders;
+      return canManageRestaurants;
+    },
+    [canManageDeliveryOrders, canManagePharmacyOrders, canManageRestaurants]
   );
 
   const [commandData, setCommandData] = useState<OperationalCommandCenterData | null>(null);
@@ -170,12 +177,23 @@ export const AdminOverview: React.FC = () => {
     'assigned' | 'pending_review' | 'cancellations' | 'drivers'
   >('assigned');
 
+  // Queue Source Filters
+  const [assignedSourceFilter, setAssignedSourceFilter] = useState<
+    'all' | 'delivery' | 'pharmacy' | 'restaurant'
+  >('all');
+  const [pendingSourceFilter, setPendingSourceFilter] = useState<
+    'all' | 'delivery' | 'pharmacy' | 'restaurant'
+  >('all');
+  const [cancellationSourceFilter, setCancellationSourceFilter] = useState<
+    'all' | 'delivery' | 'pharmacy' | 'restaurant'
+  >('all');
+
   // =========================================================================
   // Phase 3 — 1. Order Details Quick Preview Modal / Bottom Sheet State
   // =========================================================================
   const [orderPreviewTarget, setOrderPreviewTarget] = useState<{
     id: string;
-    source: 'delivery' | 'pharmacy';
+    source: 'delivery' | 'pharmacy' | 'restaurant';
     orderNumber?: string;
   } | null>(null);
   const [isLoadingOrderPreview, setIsLoadingOrderPreview] = useState<boolean>(false);
@@ -194,15 +212,24 @@ export const AdminOverview: React.FC = () => {
     prescription: PharmacySavedPrescription | null;
     files: PharmacyOrderFile[];
   } | null>(null);
+  const [restaurantPreviewData, setRestaurantPreviewData] = useState<{
+    order: RestaurantOrder | null;
+    items: any[];
+  } | null>(null);
 
   // =========================================================================
   // Phase 3 — 2. Cancellation Decision Confirmation Modal / Bottom Sheet State
   // =========================================================================
   const [cancelDecisionModal, setCancelDecisionModal] = useState<{
     orderId: string;
+    requestId?: string;
     orderNumber: string;
-    source: 'delivery' | 'pharmacy';
+    source: 'delivery' | 'pharmacy' | 'restaurant';
     customerName: string;
+    restaurantName?: string | null;
+    requesterType?: 'customer' | 'driver' | 'restaurant' | string | null;
+    requesterName?: string | null;
+    requesterPhone?: string | null;
     driverName?: string | null;
     reason?: string | null;
     decision: 'approve_cancel' | 'reject_cancel';
@@ -290,6 +317,48 @@ export const AdminOverview: React.FC = () => {
 
   useEffect(() => {
     loadOperationalData();
+
+    let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+    const handleRealtimeChange = () => {
+      if (debounceTimer) clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(() => {
+        loadOperationalData();
+      }, 1000);
+    };
+
+    const channel = supabase
+      .channel('operational-command-center-realtime')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'delivery_orders' },
+        handleRealtimeChange
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'pharmacy_orders' },
+        handleRealtimeChange
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'pharmacy_delivery_orders' },
+        handleRealtimeChange
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'restaurant_orders' },
+        handleRealtimeChange
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'restaurant_delivery_orders' },
+        handleRealtimeChange
+      )
+      .subscribe();
+
+    return () => {
+      if (debounceTimer) clearTimeout(debounceTimer);
+      supabase.removeChannel(channel);
+    };
   }, [loadOperationalData]);
 
   const handleFullRefresh = async () => {
@@ -297,12 +366,12 @@ export const AdminOverview: React.FC = () => {
   };
 
   // =========================================================================
-  // Phase 3 Handlers: Open Order Quick Preview (Delivery or Pharmacy)
+  // Phase 3 Handlers: Open Order Quick Preview (Delivery, Pharmacy, Restaurant)
   // =========================================================================
   const handleOpenOrderQuickPreview = useCallback(
     async (
       orderId: string,
-      source: 'delivery' | 'pharmacy',
+      source: 'delivery' | 'pharmacy' | 'restaurant',
       orderNumber?: string,
       e?: React.MouseEvent
     ) => {
@@ -317,6 +386,7 @@ export const AdminOverview: React.FC = () => {
       setOrderPreviewError(null);
       setDeliveryPreviewData(null);
       setPharmacyPreviewData(null);
+      setRestaurantPreviewData(null);
 
       try {
         if (source === 'delivery') {
@@ -331,7 +401,7 @@ export const AdminOverview: React.FC = () => {
               driver: res.driver || null,
             });
           }
-        } else {
+        } else if (source === 'pharmacy') {
           const res = await adminService.getPharmacyOrderDetails(orderId);
           if (res.error || !res.order) {
             setOrderPreviewError(res.error || 'تعذر جلب تفاصيل طلب الصيدلية من قاعدة البيانات');
@@ -343,6 +413,16 @@ export const AdminOverview: React.FC = () => {
               pharmacy: (res.order as any)?.requested_pharmacy || null,
               prescription: res.savedPrescription || null,
               files: Array.isArray(res.files) ? res.files : [],
+            });
+          }
+        } else {
+          const res = await restaurantAdminService.getOrderDetails(orderId);
+          if (res.error || !res.order) {
+            setOrderPreviewError(res.error || 'تعذر جلب تفاصيل طلب المطعم من قاعدة البيانات');
+          } else {
+            setRestaurantPreviewData({
+              order: res.order,
+              items: Array.isArray(res.order.items) ? res.order.items : [],
             });
           }
         }
@@ -360,6 +440,7 @@ export const AdminOverview: React.FC = () => {
     setOrderPreviewError(null);
     setDeliveryPreviewData(null);
     setPharmacyPreviewData(null);
+    setRestaurantPreviewData(null);
   }, []);
 
   // =========================================================================
@@ -369,9 +450,14 @@ export const AdminOverview: React.FC = () => {
     (
       params: {
         orderId: string;
+        requestId?: string;
         orderNumber: string;
-        source: 'delivery' | 'pharmacy';
+        source: 'delivery' | 'pharmacy' | 'restaurant';
         customerName: string;
+        restaurantName?: string | null;
+        requesterType?: 'customer' | 'driver' | 'restaurant' | string | null;
+        requesterName?: string | null;
+        requesterPhone?: string | null;
         driverName?: string | null;
         reason?: string | null;
         decision: 'approve_cancel' | 'reject_cancel';
@@ -417,11 +503,28 @@ export const AdminOverview: React.FC = () => {
         );
         success = res.success;
         errMessage = res.error;
-      } else {
+      } else if (cancelDecisionModal.source === 'pharmacy') {
         const res = await adminService.decidePharmacyDriverCancellation(
           cancelDecisionModal.orderId,
           isApprove,
           trimmedNote
+        );
+        success = res.success;
+        errMessage = res.error;
+      } else if (cancelDecisionModal.source === 'restaurant') {
+        if (!isApprove && !trimmedNote) {
+          const failMsg = 'يرجى كتابة سبب رفض طلب إلغاء طلب المطعم قبل التأكيد (إلزامي)';
+          setCancelDecisionError(failMsg);
+          showToast(failMsg, 'error');
+          setIsSubmittingCancelDecision(false);
+          return;
+        }
+
+        const targetRequestId = cancelDecisionModal.requestId || cancelDecisionModal.orderId;
+        const res = await restaurantAdminService.decideCancellationRequest(
+          targetRequestId,
+          isApprove,
+          trimmedNote || (isApprove ? undefined : 'تم رفض الإلغاء بواسطة الإدارة')
         );
         success = res.success;
         errMessage = res.error;
@@ -817,6 +920,7 @@ export const AdminOverview: React.FC = () => {
         count: number;
         deliveryCount: number;
         pharmacyCount: number;
+        restaurantCount: number;
       }
     >();
 
@@ -826,7 +930,8 @@ export const AdminOverview: React.FC = () => {
       if (existing) {
         existing.count += 1;
         if (ord.source === 'delivery') existing.deliveryCount += 1;
-        else existing.pharmacyCount += 1;
+        else if (ord.source === 'pharmacy') existing.pharmacyCount += 1;
+        else existing.restaurantCount += 1;
       } else {
         map.set(key, {
           driverId: ord.driver_id || '',
@@ -835,6 +940,7 @@ export const AdminOverview: React.FC = () => {
           count: 1,
           deliveryCount: ord.source === 'delivery' ? 1 : 0,
           pharmacyCount: ord.source === 'pharmacy' ? 1 : 0,
+          restaurantCount: ord.source === 'restaurant' ? 1 : 0,
         });
       }
     }
@@ -842,17 +948,34 @@ export const AdminOverview: React.FC = () => {
   }, [assignedOrdersList]);
 
   const filteredAssignedOrders = useMemo(() => {
+    let list = assignedOrdersList;
+    if (assignedSourceFilter !== 'all') {
+      list = list.filter((o) => o.source === assignedSourceFilter);
+    }
     const q = assignedSearch.trim().toLowerCase();
-    if (!q) return assignedOrdersList;
-    return assignedOrdersList.filter(
+    if (!q) return list;
+    return list.filter(
       (o) =>
         (o.driver_name || '').toLowerCase().includes(q) ||
         (o.customer_name || '').toLowerCase().includes(q) ||
         (o.order_number || '').toLowerCase().includes(q) ||
+        (o.restaurant_name && o.restaurant_name.toLowerCase().includes(q)) ||
         (o.driver_phone && o.driver_phone.includes(q)) ||
+        (o.customer_phone && o.customer_phone.includes(q)) ||
+        (o.delivery_address && o.delivery_address.toLowerCase().includes(q)) ||
         (o.governorate_name && o.governorate_name.toLowerCase().includes(q))
     );
-  }, [assignedOrdersList, assignedSearch]);
+  }, [assignedOrdersList, assignedSourceFilter, assignedSearch]);
+
+  const filteredPendingReviewOrders = useMemo(() => {
+    if (pendingSourceFilter === 'all') return pendingReviewList;
+    return pendingReviewList.filter((o) => o.source === pendingSourceFilter);
+  }, [pendingReviewList, pendingSourceFilter]);
+
+  const filteredCancellationRequests = useMemo(() => {
+    if (cancellationSourceFilter === 'all') return cancellationRequestsList;
+    return cancellationRequestsList.filter((o) => o.source === cancellationSourceFilter);
+  }, [cancellationRequestsList, cancellationSourceFilter]);
 
   // Real calculated operational totals (null if stats/commandData not loaded yet)
   const pendingDeliveryOrders = stats
@@ -869,9 +992,11 @@ export const AdminOverview: React.FC = () => {
     ? commandData.counts.pharmacy_pending_review
     : null;
 
+  const pendingRestaurantOrders = commandData?.counts?.restaurant_pending_review ?? 0;
+
   const totalPendingReviewOrders =
-    pendingDeliveryOrders !== null || pendingPharmacyOrders !== null
-      ? (pendingDeliveryOrders ?? 0) + (pendingPharmacyOrders ?? 0)
+    pendingDeliveryOrders !== null || pendingPharmacyOrders !== null || pendingRestaurantOrders > 0
+      ? (pendingDeliveryOrders ?? 0) + (pendingPharmacyOrders ?? 0) + (pendingRestaurantOrders ?? 0)
       : null;
 
   const cancellationPendingDelivery = stats
@@ -890,9 +1015,17 @@ export const AdminOverview: React.FC = () => {
     ? commandData.counts.pharmacy_cancellation_pending
     : null;
 
+  const cancellationPendingRestaurant = commandData?.counts?.restaurant_cancellation_pending ?? 0;
+
   const totalCancellationAttention =
-    cancellationPendingDelivery !== null || cancelledDelivery !== null || cancelledPharmacy !== null
-      ? (cancellationPendingDelivery ?? 0) + (cancelledDelivery ?? 0) + (cancelledPharmacy ?? 0)
+    cancellationPendingDelivery !== null ||
+    cancelledDelivery !== null ||
+    cancelledPharmacy !== null ||
+    cancellationPendingRestaurant > 0
+      ? (cancellationPendingDelivery ?? 0) +
+        (cancelledDelivery ?? 0) +
+        (cancelledPharmacy ?? 0) +
+        (cancellationPendingRestaurant ?? 0)
       : null;
 
   const assignedDeliveryOrders = stats
@@ -907,10 +1040,12 @@ export const AdminOverview: React.FC = () => {
     ? commandData.counts.pharmacy_assigned_active
     : null;
 
+  const assignedRestaurantOrders = commandData?.counts?.restaurant_assigned_active ?? 0;
+
   const totalAssignedOrders = commandData
     ? assignedOrdersList.length
-    : assignedDeliveryOrders !== null || assignedPharmacyOrders !== null
-    ? (assignedDeliveryOrders ?? 0) + (assignedPharmacyOrders ?? 0)
+    : assignedDeliveryOrders !== null || assignedPharmacyOrders !== null || assignedRestaurantOrders > 0
+    ? (assignedDeliveryOrders ?? 0) + (assignedPharmacyOrders ?? 0) + (assignedRestaurantOrders ?? 0)
     : null;
 
   const completedDeliveryOrders = stats
@@ -927,9 +1062,11 @@ export const AdminOverview: React.FC = () => {
     ? commandData.counts.pharmacy_completed
     : null;
 
+  const completedRestaurantOrders = commandData?.counts?.restaurant_completed ?? 0;
+
   const totalCompletedOrders =
-    completedDeliveryOrders !== null || completedPharmacyOrders !== null
-      ? (completedDeliveryOrders ?? 0) + (completedPharmacyOrders ?? 0)
+    completedDeliveryOrders !== null || completedPharmacyOrders !== null || completedRestaurantOrders > 0
+      ? (completedDeliveryOrders ?? 0) + (completedPharmacyOrders ?? 0) + (completedRestaurantOrders ?? 0)
       : null;
 
   const pendingNewDrivers = stats
@@ -963,6 +1100,24 @@ export const AdminOverview: React.FC = () => {
 
   const getOrderStatusBadge = (status: string) => {
     const s = (status || '').toLowerCase();
+    if (s === 'cooking') {
+      return {
+        label: 'جاري التحضير بالمطعم',
+        cls: 'bg-indigo-500/15 text-indigo-300 border-indigo-500/30',
+      };
+    }
+    if (s === 'ready_for_pickup') {
+      return {
+        label: 'جاهز للاستلام بالمطعم',
+        cls: 'bg-teal-500/15 text-teal-300 border-teal-500/30',
+      };
+    }
+    if (s === 'restaurant_confirmed') {
+      return {
+        label: 'مؤكد من المطعم',
+        cls: 'bg-sky-500/15 text-sky-300 border-sky-500/30',
+      };
+    }
     if (s === 'pending_review' || s === 'submitted' || s === 'pending' || s === 'new') {
       return {
         label: 'قيد المراجعة',
@@ -987,7 +1142,7 @@ export const AdminOverview: React.FC = () => {
         cls: 'bg-indigo-500/15 text-indigo-300 border-indigo-500/30',
       };
     }
-    if (s === 'out_for_delivery' || s === 'on_the_way' || s === 'picked_up') {
+    if (s === 'in_delivery' || s === 'out_for_delivery' || s === 'on_the_way' || s === 'picked_up') {
       return {
         label: 'في الطريق للعميل',
         cls: 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30',
@@ -1196,7 +1351,7 @@ export const AdminOverview: React.FC = () => {
             </div>
 
             <div
-              className="mt-4 pt-3 border-t border-slate-800/80 grid grid-cols-2 gap-2"
+              className="mt-4 pt-3 border-t border-slate-800/80 grid grid-cols-3 gap-1.5"
               onClick={(e) => e.stopPropagation()}
             >
               <button
@@ -1204,9 +1359,9 @@ export const AdminOverview: React.FC = () => {
                 onClick={() =>
                   navigateToSection('delivery_orders', { statusTab: 'pending_review' })
                 }
-                className="px-2.5 py-2 rounded-xl bg-slate-950 hover:bg-amber-500/15 border border-slate-800 hover:border-amber-500/40 text-right transition-colors cursor-pointer"
+                className="px-2 py-2 rounded-xl bg-slate-950 hover:bg-amber-500/15 border border-slate-800 hover:border-amber-500/40 text-right transition-colors cursor-pointer"
               >
-                <span className="text-[10px] text-slate-400 block">قيد المراجعة دليفري</span>
+                <span className="text-[10px] text-slate-400 block truncate">دليفري</span>
                 <span className="text-xs font-black font-mono text-amber-300">
                   {isStatsLoading && isCommandLoading ? '...' : (pendingDeliveryOrders ?? '—')}
                 </span>
@@ -1217,13 +1372,31 @@ export const AdminOverview: React.FC = () => {
                 onClick={() =>
                   navigateToSection('pharmacy_orders', { status: 'pending_review' })
                 }
-                className="px-2.5 py-2 rounded-xl bg-slate-950 hover:bg-amber-500/15 border border-slate-800 hover:border-amber-500/40 text-right transition-colors cursor-pointer"
+                className="px-2 py-2 rounded-xl bg-slate-950 hover:bg-amber-500/15 border border-slate-800 hover:border-amber-500/40 text-right transition-colors cursor-pointer"
               >
-                <span className="text-[10px] text-slate-400 block">قيد المراجعة صيدلية</span>
+                <span className="text-[10px] text-slate-400 block truncate">صيدلية</span>
                 <span className="text-xs font-black font-mono text-amber-300">
                   {isStatsLoading && isPharmacyLoading && isCommandLoading
                     ? '...'
                     : (pendingPharmacyOrders ?? '—')}
+                </span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  if (canViewRestaurants) {
+                    navigateToSection('restaurant_orders', { status: 'pending' });
+                  } else {
+                    setActiveQueueTab('pending_review');
+                    setPendingSourceFilter('restaurant');
+                  }
+                }}
+                className="px-2 py-2 rounded-xl bg-slate-950 hover:bg-amber-500/15 border border-slate-800 hover:border-amber-500/40 text-right transition-colors cursor-pointer"
+              >
+                <span className="text-[10px] text-amber-400/90 block truncate">مطاعم</span>
+                <span className="text-xs font-black font-mono text-amber-300">
+                  {isCommandLoading ? '...' : (pendingRestaurantOrders ?? '—')}
                 </span>
               </button>
             </div>
@@ -1262,7 +1435,7 @@ export const AdminOverview: React.FC = () => {
             </div>
 
             <div
-              className="mt-4 pt-3 border-t border-slate-800/80 grid grid-cols-3 gap-1.5"
+              className="mt-4 pt-3 border-t border-slate-800/80 grid grid-cols-2 sm:grid-cols-4 gap-1.5"
               onClick={(e) => e.stopPropagation()}
             >
               <button
@@ -1301,6 +1474,20 @@ export const AdminOverview: React.FC = () => {
                   {isStatsLoading && isPharmacyLoading ? '...' : (cancelledPharmacy ?? '—')}
                 </span>
               </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setActiveQueueTab('cancellations');
+                  setCancellationSourceFilter('restaurant');
+                }}
+                className="px-2 py-2 rounded-xl bg-rose-950/30 hover:bg-rose-500/20 border border-rose-500/30 text-right transition-colors cursor-pointer"
+              >
+                <span className="text-[10px] text-rose-300 block truncate">إلغاء مطاعم</span>
+                <span className="text-xs font-black font-mono text-rose-200">
+                  {isCommandLoading ? '...' : (cancellationPendingRestaurant ?? '—')}
+                </span>
+              </button>
             </div>
           </div>
 
@@ -1332,15 +1519,15 @@ export const AdminOverview: React.FC = () => {
             </div>
 
             <div
-              className="mt-4 pt-3 border-t border-slate-800/80 grid grid-cols-2 gap-2"
+              className="mt-4 pt-3 border-t border-slate-800/80 grid grid-cols-3 gap-1.5"
               onClick={(e) => e.stopPropagation()}
             >
               <button
                 type="button"
                 onClick={() => navigateToSection('delivery_orders', { statusTab: 'accepted' })}
-                className="px-2.5 py-2 rounded-xl bg-slate-950 hover:bg-sky-500/15 border border-slate-800 hover:border-sky-500/40 text-right transition-colors cursor-pointer"
+                className="px-2 py-2 rounded-xl bg-slate-950 hover:bg-sky-500/15 border border-slate-800 hover:border-sky-500/40 text-right transition-colors cursor-pointer"
               >
-                <span className="text-[10px] text-slate-400 block">مسند دليفري</span>
+                <span className="text-[10px] text-slate-400 block truncate">دليفري</span>
                 <span className="text-xs font-black font-mono text-sky-300">
                   {isStatsLoading && isCommandLoading ? '...' : (assignedDeliveryOrders ?? '—')}
                 </span>
@@ -1351,11 +1538,25 @@ export const AdminOverview: React.FC = () => {
                 onClick={() =>
                   navigateToSection('pharmacy_orders', { status: 'out_for_delivery' })
                 }
-                className="px-2.5 py-2 rounded-xl bg-slate-950 hover:bg-sky-500/15 border border-slate-800 hover:border-sky-500/40 text-right transition-colors cursor-pointer"
+                className="px-2 py-2 rounded-xl bg-slate-950 hover:bg-sky-500/15 border border-slate-800 hover:border-sky-500/40 text-right transition-colors cursor-pointer"
               >
-                <span className="text-[10px] text-slate-400 block">مسند صيدلية</span>
+                <span className="text-[10px] text-slate-400 block truncate">صيدلية</span>
                 <span className="text-xs font-black font-mono text-sky-300">
                   {isStatsLoading && isCommandLoading ? '...' : (assignedPharmacyOrders ?? '—')}
+                </span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setActiveQueueTab('assigned');
+                  setAssignedSourceFilter('restaurant');
+                }}
+                className="px-2 py-2 rounded-xl bg-slate-950 hover:bg-sky-500/15 border border-slate-800 hover:border-sky-500/40 text-right transition-colors cursor-pointer"
+              >
+                <span className="text-[10px] text-sky-300/90 block truncate">مطاعم</span>
+                <span className="text-xs font-black font-mono text-sky-300">
+                  {isCommandLoading ? '...' : (assignedRestaurantOrders ?? '—')}
                 </span>
               </button>
             </div>
@@ -1389,15 +1590,15 @@ export const AdminOverview: React.FC = () => {
             </div>
 
             <div
-              className="mt-4 pt-3 border-t border-slate-800/80 grid grid-cols-2 gap-2"
+              className="mt-4 pt-3 border-t border-slate-800/80 grid grid-cols-3 gap-1.5"
               onClick={(e) => e.stopPropagation()}
             >
               <button
                 type="button"
                 onClick={() => navigateToSection('delivery_orders', { statusTab: 'completed' })}
-                className="px-2.5 py-2 rounded-xl bg-slate-950 hover:bg-emerald-500/15 border border-slate-800 hover:border-emerald-500/40 text-right transition-colors cursor-pointer"
+                className="px-2 py-2 rounded-xl bg-slate-950 hover:bg-emerald-500/15 border border-slate-800 hover:border-emerald-500/40 text-right transition-colors cursor-pointer"
               >
-                <span className="text-[10px] text-slate-400 block">مكتمل دليفري</span>
+                <span className="text-[10px] text-slate-400 block truncate">دليفري</span>
                 <span className="text-xs font-black font-mono text-emerald-300">
                   {isStatsLoading && isCommandLoading ? '...' : (completedDeliveryOrders ?? '—')}
                 </span>
@@ -1406,13 +1607,28 @@ export const AdminOverview: React.FC = () => {
               <button
                 type="button"
                 onClick={() => navigateToSection('pharmacy_orders', { status: 'completed' })}
-                className="px-2.5 py-2 rounded-xl bg-slate-950 hover:bg-emerald-500/15 border border-slate-800 hover:border-emerald-500/40 text-right transition-colors cursor-pointer"
+                className="px-2 py-2 rounded-xl bg-slate-950 hover:bg-emerald-500/15 border border-slate-800 hover:border-emerald-500/40 text-right transition-colors cursor-pointer"
               >
-                <span className="text-[10px] text-slate-400 block">مكتمل صيدلية</span>
+                <span className="text-[10px] text-slate-400 block truncate">صيدلية</span>
                 <span className="text-xs font-black font-mono text-emerald-300">
                   {isStatsLoading && isPharmacyLoading && isCommandLoading
                     ? '...'
                     : (completedPharmacyOrders ?? '—')}
+                </span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  if (canViewRestaurants) {
+                    navigateToSection('restaurant_orders', { status: 'delivered' });
+                  }
+                }}
+                className="px-2 py-2 rounded-xl bg-slate-950 hover:bg-emerald-500/15 border border-slate-800 hover:border-emerald-500/40 text-right transition-colors cursor-pointer"
+              >
+                <span className="text-[10px] text-emerald-400/90 block truncate">مطاعم</span>
+                <span className="text-xs font-black font-mono text-emerald-300">
+                  {isCommandLoading ? '...' : (completedRestaurantOrders ?? '—')}
                 </span>
               </button>
             </div>
@@ -2058,9 +2274,13 @@ export const AdminOverview: React.FC = () => {
                           {dw.driverName}
                         </span>
                         <span className="text-[10px] text-slate-400 block">
-                          {dw.deliveryCount > 0 ? `${dw.deliveryCount} دليفري` : ''}
-                          {dw.deliveryCount > 0 && dw.pharmacyCount > 0 ? ' • ' : ''}
-                          {dw.pharmacyCount > 0 ? `${dw.pharmacyCount} صيدلية` : ''}
+                          {[
+                            dw.deliveryCount > 0 ? `${dw.deliveryCount} دليفري` : '',
+                            dw.pharmacyCount > 0 ? `${dw.pharmacyCount} صيدلية` : '',
+                            dw.restaurantCount > 0 ? `${dw.restaurantCount} مطاعم` : '',
+                          ]
+                            .filter(Boolean)
+                            .join(' • ')}
                         </span>
                       </div>
                       <span className="px-2 py-0.5 rounded-lg bg-sky-500 text-slate-950 font-black font-mono text-xs">
@@ -2072,28 +2292,53 @@ export const AdminOverview: React.FC = () => {
               </div>
             )}
 
-            {/* Search Assigned Orders by Driver Name or Order Number */}
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-              <div className="relative flex-1 max-w-md">
-                <Search className="w-4 h-4 text-slate-500 absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none" />
-                <input
-                  type="text"
-                  value={assignedSearch}
-                  onChange={(e) => setAssignedSearch(e.target.value)}
-                  placeholder="ابحث باسم السائق، اسم العميل، أو رقم الطلب..."
-                  className="w-full bg-slate-950 border border-slate-800 focus:border-sky-500/50 rounded-xl pr-9 pl-4 py-2 text-xs text-white placeholder:text-slate-500 focus:outline-none"
-                />
+            {/* Source Filter Tabs & Search Assigned Orders */}
+            <div className="space-y-3">
+              <div className="flex items-center gap-1.5 overflow-x-auto pb-1 text-xs font-bold">
+                <span className="text-[11px] text-slate-400 ml-1 shrink-0">تصفية حسب المصدر:</span>
+                {[
+                  { id: 'all', label: 'الكل' },
+                  { id: 'delivery', label: 'دليفري' },
+                  { id: 'pharmacy', label: 'صيدلية' },
+                  { id: 'restaurant', label: 'مطاعم' },
+                ].map((sf) => (
+                  <button
+                    key={sf.id}
+                    type="button"
+                    onClick={() => setAssignedSourceFilter(sf.id as any)}
+                    className={`px-3 py-1 rounded-xl transition-all cursor-pointer text-xs ${
+                      assignedSourceFilter === sf.id
+                        ? 'bg-sky-500 text-slate-950 font-black'
+                        : 'bg-slate-950 text-slate-400 hover:text-white border border-slate-800'
+                    }`}
+                  >
+                    {sf.label}
+                  </button>
+                ))}
               </div>
 
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => navigateToSection('delivery_orders', { statusTab: 'accepted' })}
-                  className="px-3 py-2 rounded-xl bg-slate-950 hover:bg-slate-800 border border-slate-800 text-xs font-bold text-sky-300 flex items-center gap-1.5 cursor-pointer"
-                >
-                  <span>فتح كل طلبات الدليفري المسندة</span>
-                  <ArrowUpRight className="w-3.5 h-3.5" />
-                </button>
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div className="relative flex-1 max-w-md">
+                  <Search className="w-4 h-4 text-slate-500 absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                  <input
+                    type="text"
+                    value={assignedSearch}
+                    onChange={(e) => setAssignedSearch(e.target.value)}
+                    placeholder="ابحث باسم السائق، المطعم، العميل، أو رقم الطلب..."
+                    className="w-full bg-slate-950 border border-slate-800 focus:border-sky-500/50 rounded-xl pr-9 pl-4 py-2 text-xs text-white placeholder:text-slate-500 focus:outline-none"
+                  />
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => navigateToSection('delivery_orders', { statusTab: 'accepted' })}
+                    className="px-3 py-2 rounded-xl bg-slate-950 hover:bg-slate-800 border border-slate-800 text-xs font-bold text-sky-300 flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <span>فتح كل طلبات الدليفري المسندة</span>
+                    <ArrowUpRight className="w-3.5 h-3.5" />
+                  </button>
+                </div>
               </div>
             </div>
 
@@ -2111,8 +2356,8 @@ export const AdminOverview: React.FC = () => {
               <div className="p-8 rounded-2xl bg-slate-950/60 border border-slate-800/80 text-center space-y-2">
                 <Inbox className="w-7 h-7 text-slate-500 mx-auto" />
                 <p className="text-xs font-bold text-slate-300">
-                  {assignedSearch
-                    ? 'لا توجد طلبات مسندة تطابق بحثك الحالي'
+                  {assignedSearch || assignedSourceFilter !== 'all'
+                    ? 'لا توجد طلبات مسندة تطابق الفلترة الحالية'
                     : 'العدد الفعلي (0) — لا توجد طلبات جارية مسندة للسائقين في هذه اللحظة'}
                 </p>
               </div>
@@ -2132,8 +2377,12 @@ export const AdminOverview: React.FC = () => {
                             driverId: item.driver_id,
                             statusTab: 'all',
                           });
-                        } else {
+                        } else if (item.source === 'pharmacy') {
                           navigateToSection('pharmacy_orders', {
+                            search: item.order_number,
+                          });
+                        } else {
+                          navigateToSection('restaurant_orders', {
                             search: item.order_number,
                           });
                         }
@@ -2147,10 +2396,16 @@ export const AdminOverview: React.FC = () => {
                               className={`text-[10px] font-black px-2 py-0.5 rounded-lg border ${
                                 item.source === 'delivery'
                                   ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30'
-                                  : 'bg-purple-500/15 text-purple-300 border-purple-500/30'
+                                  : item.source === 'pharmacy'
+                                  ? 'bg-purple-500/15 text-purple-300 border-purple-500/30'
+                                  : 'bg-amber-500/15 text-amber-300 border-amber-500/30'
                               }`}
                             >
-                              {item.source === 'delivery' ? 'طلب دليفري' : 'طلب صيدلية'}
+                              {item.source === 'delivery'
+                                ? 'طلب دليفري'
+                                : item.source === 'pharmacy'
+                                ? 'طلب صيدلية'
+                                : 'طلب مطعم'}
                             </span>
                             <span className="text-xs font-black font-mono text-white">
                               #{item.order_number}
@@ -2161,8 +2416,21 @@ export const AdminOverview: React.FC = () => {
                               {statusInfo.label}
                             </span>
                           </div>
+
+                          {item.restaurant_name && (
+                            <div className="text-xs font-black text-amber-300 flex items-center gap-1 mt-0.5">
+                              <UtensilsCrossed className="w-3.5 h-3.5 shrink-0" />
+                              <span>المطعم: {item.restaurant_name}</span>
+                            </div>
+                          )}
+
                           <div className="text-xs font-bold text-slate-200">
                             العميل: {item.customer_name}
+                            {item.customer_phone && (
+                              <span className="text-[11px] font-mono text-slate-400 mr-2" dir="ltr">
+                                ({item.customer_phone})
+                              </span>
+                            )}
                           </div>
                         </div>
 
@@ -2201,7 +2469,7 @@ export const AdminOverview: React.FC = () => {
                         <span className="flex items-center gap-1 truncate max-w-[45%]">
                           <MapPin className="w-3 h-3 text-slate-500 shrink-0" />
                           <span className="truncate">
-                            {item.governorate_name || 'العنوان مسجل بالطلب'}
+                            {item.delivery_address || item.governorate_name || 'العنوان مسجل بالطلب'}
                           </span>
                         </span>
 
@@ -2232,10 +2500,14 @@ export const AdminOverview: React.FC = () => {
                                   statusTab: 'all',
                                   openOrderId: item.id,
                                 });
-                              } else {
+                              } else if (item.source === 'pharmacy') {
                                 navigateToSection('pharmacy_orders', {
                                   search: item.order_number,
                                   openOrderId: item.id,
+                                });
+                              } else {
+                                navigateToSection('restaurant_orders', {
+                                  search: item.order_number,
                                 });
                               }
                             }}
@@ -2257,20 +2529,46 @@ export const AdminOverview: React.FC = () => {
         {/* TAB 2: الطلبات قيد المراجعة */}
         {activeQueueTab === 'pending_review' && (
           <div className="space-y-3">
+            {/* Source Filter Tabs */}
+            <div className="flex items-center gap-1.5 overflow-x-auto pb-1 text-xs font-bold">
+              <span className="text-[11px] text-slate-400 ml-1 shrink-0">تصفية حسب المصدر:</span>
+              {[
+                { id: 'all', label: 'الكل' },
+                { id: 'delivery', label: 'دليفري' },
+                { id: 'pharmacy', label: 'صيدلية' },
+                { id: 'restaurant', label: 'مطاعم' },
+              ].map((sf) => (
+                <button
+                  key={sf.id}
+                  type="button"
+                  onClick={() => setPendingSourceFilter(sf.id as any)}
+                  className={`px-3 py-1 rounded-xl transition-all cursor-pointer text-xs ${
+                    pendingSourceFilter === sf.id
+                      ? 'bg-amber-500 text-slate-950 font-black'
+                      : 'bg-slate-950 text-slate-400 hover:text-white border border-slate-800'
+                  }`}
+                >
+                  {sf.label}
+                </button>
+              ))}
+            </div>
+
             {isCommandLoading ? (
               <div className="py-10 text-center text-slate-400 text-xs">
                 جاري تحميل الطلبات قيد المراجعة...
               </div>
-            ) : pendingReviewList.length === 0 ? (
+            ) : filteredPendingReviewOrders.length === 0 ? (
               <div className="p-8 rounded-2xl bg-slate-950/60 border border-slate-800/80 text-center space-y-2">
                 <CheckCircle2 className="w-7 h-7 text-emerald-400 mx-auto" />
                 <p className="text-xs font-bold text-slate-300">
-                  العدد الفعلي (0) — لا توجد طلبات متأخرة قيد المراجعة حاليًا
+                  {pendingSourceFilter !== 'all'
+                    ? 'لا توجد طلبات قيد المراجعة في هذا القسم حاليًا'
+                    : 'العدد الفعلي (0) — لا توجد طلبات متأخرة قيد المراجعة حاليًا'}
                 </p>
               </div>
             ) : (
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                {pendingReviewList.map((ord) => {
+                {filteredPendingReviewOrders.map((ord) => {
                   const statusInfo = getOrderStatusBadge(ord.status);
                   const canViewThisOrder = canViewOrderBySource(ord.source);
                   return (
@@ -2281,22 +2579,30 @@ export const AdminOverview: React.FC = () => {
                           handleOpenOrderQuickPreview(ord.id, ord.source, ord.order_number);
                         } else if (ord.source === 'delivery') {
                           navigateToSection('delivery_orders', { statusTab: 'pending_review' });
-                        } else {
+                        } else if (ord.source === 'pharmacy') {
                           navigateToSection('pharmacy_orders', { status: 'pending_review' });
+                        } else {
+                          navigateToSection('restaurant_orders', { search: ord.order_number });
                         }
                       }}
                       className="p-4 rounded-2xl bg-slate-950 hover:bg-slate-900 border border-amber-500/25 hover:border-amber-400 transition-all flex flex-col justify-between gap-2.5 cursor-pointer"
                     >
                       <div className="flex items-center justify-between gap-2">
-                        <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-2 flex-wrap">
                           <span
                             className={`text-[10px] font-black px-2 py-0.5 rounded-lg border ${
                               ord.source === 'delivery'
                                 ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30'
-                                : 'bg-purple-500/15 text-purple-300 border-purple-500/30'
+                                : ord.source === 'pharmacy'
+                                ? 'bg-purple-500/15 text-purple-300 border-purple-500/30'
+                                : 'bg-amber-500/15 text-amber-300 border-amber-500/30'
                             }`}
                           >
-                            {ord.source === 'delivery' ? 'دليفري' : 'صيدلية'}
+                            {ord.source === 'delivery'
+                              ? 'دليفري'
+                              : ord.source === 'pharmacy'
+                              ? 'صيدلية'
+                              : 'مطعم'}
                           </span>
                           <span className="text-xs font-black font-mono text-white">
                             #{ord.order_number}
@@ -2312,9 +2618,21 @@ export const AdminOverview: React.FC = () => {
                         </span>
                       </div>
 
+                      {ord.restaurant_name && (
+                        <div className="text-xs font-black text-amber-300 flex items-center gap-1">
+                          <UtensilsCrossed className="w-3.5 h-3.5 shrink-0" />
+                          <span>المطعم: {ord.restaurant_name}</span>
+                        </div>
+                      )}
+
                       <div className="flex items-center justify-between text-xs">
                         <span className="font-bold text-slate-200">
                           العميل: {ord.customer_name}
+                          {ord.customer_phone && (
+                            <span className="text-[11px] font-mono text-slate-400 mr-2" dir="ltr">
+                              ({ord.customer_phone})
+                            </span>
+                          )}
                         </span>
                         {ord.total_amount !== null && ord.total_amount !== undefined && (
                           <span className="font-mono text-amber-300 text-[11px] font-bold">
@@ -2354,10 +2672,14 @@ export const AdminOverview: React.FC = () => {
                                   statusTab: 'pending_review',
                                   openOrderId: ord.id,
                                 });
-                              } else {
+                              } else if (ord.source === 'pharmacy') {
                                 navigateToSection('pharmacy_orders', {
                                   status: 'pending_review',
                                   openOrderId: ord.id,
+                                });
+                              } else {
+                                navigateToSection('restaurant_orders', {
+                                  search: ord.order_number,
                                 });
                               }
                             }}
@@ -2379,34 +2701,89 @@ export const AdminOverview: React.FC = () => {
         {/* TAB 3: طلبات الإلغاء */}
         {activeQueueTab === 'cancellations' && (
           <div className="space-y-3">
+            {/* Source Filter Tabs */}
+            <div className="flex items-center gap-1.5 overflow-x-auto pb-1 text-xs font-bold">
+              <span className="text-[11px] text-slate-400 ml-1 shrink-0">تصفية حسب المصدر:</span>
+              {[
+                { id: 'all', label: 'الكل' },
+                { id: 'delivery', label: 'دليفري' },
+                { id: 'pharmacy', label: 'صيدلية' },
+                { id: 'restaurant', label: 'مطاعم' },
+              ].map((sf) => (
+                <button
+                  key={sf.id}
+                  type="button"
+                  onClick={() => setCancellationSourceFilter(sf.id as any)}
+                  className={`px-3 py-1 rounded-xl transition-all cursor-pointer text-xs ${
+                    cancellationSourceFilter === sf.id
+                      ? 'bg-rose-500 text-white font-black'
+                      : 'bg-slate-950 text-slate-400 hover:text-white border border-slate-800'
+                  }`}
+                >
+                  {sf.label}
+                </button>
+              ))}
+            </div>
+
             {isCommandLoading ? (
               <div className="py-10 text-center text-slate-400 text-xs">
                 جاري تحميل طلبات الإلغاء...
               </div>
-            ) : cancellationRequestsList.length === 0 ? (
+            ) : filteredCancellationRequests.length === 0 ? (
               <div className="p-8 rounded-2xl bg-slate-950/60 border border-slate-800/80 text-center space-y-2">
                 <CheckCircle2 className="w-7 h-7 text-emerald-400 mx-auto" />
                 <p className="text-xs font-bold text-slate-300">
-                  العدد الفعلي (0) — لا توجد طلبات إلغاء معلقة بانتظار قرار حاليًا
+                  {cancellationSourceFilter !== 'all'
+                    ? 'لا توجد طلبات إلغاء في هذا القسم حاليًا'
+                    : 'العدد الفعلي (0) — لا توجد طلبات إلغاء معلقة بانتظار قرار حاليًا'}
                 </p>
               </div>
             ) : (
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                {cancellationRequestsList.map((ord) => {
+                {filteredCancellationRequests.map((ord) => {
                   const canViewThisOrder = canViewOrderBySource(ord.source);
                   const canDecideThisCancel = canDecideCancelBySource(ord.source);
+
+                  const requesterBadge = (() => {
+                    const rType = ord.requester_type || (ord.driver_name ? 'driver' : 'customer');
+                    if (rType === 'restaurant') {
+                      return {
+                        label: 'مقدم الطلب: المطعم',
+                        cls: 'bg-amber-500/15 text-amber-300 border-amber-500/30',
+                      };
+                    }
+                    if (rType === 'driver') {
+                      return {
+                        label: 'مقدم الطلب: السائق / المندوب',
+                        cls: 'bg-sky-500/15 text-sky-300 border-sky-500/30',
+                      };
+                    }
+                    return {
+                      label: 'مقدم الطلب: العميل',
+                      cls: 'bg-blue-500/15 text-blue-300 border-blue-500/30',
+                    };
+                  })();
+
                   return (
                     <div
                       key={`${ord.source}-${ord.id}`}
                       onClick={() => {
                         if (canViewThisOrder) {
-                          handleOpenOrderQuickPreview(ord.id, ord.source, ord.order_number);
+                          handleOpenOrderQuickPreview(
+                            ord.order_id || ord.id,
+                            ord.source,
+                            ord.order_number
+                          );
                         } else if (ord.source === 'delivery') {
                           navigateToSection('delivery_orders', {
                             statusTab: 'cancellation_pending',
                           });
-                        } else {
+                        } else if (ord.source === 'pharmacy') {
                           navigateToSection('pharmacy_orders', {
+                            search: ord.order_number,
+                          });
+                        } else {
+                          navigateToSection('restaurant_orders', {
                             search: ord.order_number,
                           });
                         }
@@ -2414,15 +2791,29 @@ export const AdminOverview: React.FC = () => {
                       className="p-4 rounded-2xl bg-slate-950 hover:bg-slate-900 border border-rose-500/25 hover:border-rose-400 transition-all flex flex-col justify-between gap-2.5 cursor-pointer"
                     >
                       <div className="flex items-center justify-between gap-2">
-                        <div className="flex items-center gap-2">
-                          <span className="text-[10px] font-black px-2 py-0.5 rounded-lg border bg-rose-500/15 text-rose-300 border-rose-500/30">
-                            {ord.source === 'delivery' ? 'دليفري' : 'صيدلية'}
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span
+                            className={`text-[10px] font-black px-2 py-0.5 rounded-lg border ${
+                              ord.source === 'delivery'
+                                ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30'
+                                : ord.source === 'pharmacy'
+                                ? 'bg-purple-500/15 text-purple-300 border-purple-500/30'
+                                : 'bg-amber-500/15 text-amber-300 border-amber-500/30'
+                            }`}
+                          >
+                            {ord.source === 'delivery'
+                              ? 'دليفري'
+                              : ord.source === 'pharmacy'
+                              ? 'صيدلية'
+                              : 'مطعم'}
                           </span>
                           <span className="text-xs font-black font-mono text-white">
                             #{ord.order_number}
                           </span>
-                          <span className="text-[10px] font-bold px-2 py-0.5 rounded-lg border bg-rose-500/20 text-rose-300 border-rose-500/40">
-                            طلب إلغاء معلق
+                          <span
+                            className={`text-[10px] font-bold px-2 py-0.5 rounded-lg border ${requesterBadge.cls}`}
+                          >
+                            {requesterBadge.label}
                           </span>
                         </div>
                         <span className="text-[10px] text-slate-400 font-mono">
@@ -2430,21 +2821,46 @@ export const AdminOverview: React.FC = () => {
                         </span>
                       </div>
 
-                      <div className="flex items-center justify-between text-xs">
-                        <span className="font-bold text-slate-200">
-                          العميل: {ord.customer_name}
-                        </span>
-                        {ord.driver_name && (
-                          <span className="text-[11px] font-bold text-sky-300">
-                            السائق: {ord.driver_name}
+                      {ord.restaurant_name && (
+                        <div className="text-xs font-black text-amber-300 flex items-center gap-1">
+                          <UtensilsCrossed className="w-3.5 h-3.5 shrink-0" />
+                          <span>المطعم: {ord.restaurant_name}</span>
+                        </div>
+                      )}
+
+                      <div className="flex flex-col gap-1 text-xs">
+                        <div className="flex items-center justify-between">
+                          <span className="font-bold text-slate-200">
+                            العميل: {ord.customer_name}
+                            {ord.customer_phone && (
+                              <span className="text-[11px] font-mono text-slate-400 mr-2" dir="ltr">
+                                ({ord.customer_phone})
+                              </span>
+                            )}
                           </span>
+                          {ord.driver_name && (
+                            <span className="text-[11px] font-bold text-sky-300">
+                              السائق: {ord.driver_name}
+                            </span>
+                          )}
+                        </div>
+
+                        {(ord.requester_name || ord.requester_phone) && (
+                          <div className="text-[11px] text-slate-400 flex items-center gap-2">
+                            <span>مقدم البلاغ: {ord.requester_name || '—'}</span>
+                            {ord.requester_phone && (
+                              <span className="font-mono text-slate-300" dir="ltr">
+                                {ord.requester_phone}
+                              </span>
+                            )}
+                          </div>
                         )}
                       </div>
 
                       {ord.reason && (
-                        <div className="p-2 rounded-xl bg-rose-950/30 border border-rose-500/20 text-[11px] text-rose-200">
-                          <span className="font-bold">السبب: </span>
-                          {ord.reason}
+                        <div className="p-2.5 rounded-xl bg-rose-950/30 border border-rose-500/20 text-[11px] text-rose-200 space-y-0.5">
+                          <span className="font-bold block">سبب طلب الإلغاء:</span>
+                          <p className="leading-relaxed">{ord.reason}</p>
                         </div>
                       )}
 
@@ -2458,7 +2874,7 @@ export const AdminOverview: React.FC = () => {
                               type="button"
                               onClick={(e) =>
                                 handleOpenOrderQuickPreview(
-                                  ord.id,
+                                  ord.order_id || ord.id,
                                   ord.source,
                                   ord.order_number,
                                   e
@@ -2480,10 +2896,15 @@ export const AdminOverview: React.FC = () => {
                               onClick={(e) =>
                                 handlePromptCancellationDecision(
                                   {
-                                    orderId: ord.id,
+                                    orderId: ord.order_id || ord.id,
+                                    requestId: ord.request_id || ord.id,
                                     orderNumber: ord.order_number,
                                     source: ord.source,
                                     customerName: ord.customer_name,
+                                    restaurantName: ord.restaurant_name,
+                                    requesterType: ord.requester_type,
+                                    requesterName: ord.requester_name,
+                                    requesterPhone: ord.requester_phone,
                                     driverName: ord.driver_name,
                                     reason: ord.reason,
                                     decision: 'approve_cancel',
@@ -2502,10 +2923,15 @@ export const AdminOverview: React.FC = () => {
                               onClick={(e) =>
                                 handlePromptCancellationDecision(
                                   {
-                                    orderId: ord.id,
+                                    orderId: ord.order_id || ord.id,
+                                    requestId: ord.request_id || ord.id,
                                     orderNumber: ord.order_number,
                                     source: ord.source,
                                     customerName: ord.customer_name,
+                                    restaurantName: ord.restaurant_name,
+                                    requesterType: ord.requester_type,
+                                    requesterName: ord.requester_name,
+                                    requesterPhone: ord.requester_phone,
                                     driverName: ord.driver_name,
                                     reason: ord.reason,
                                     decision: 'reject_cancel',
@@ -3366,6 +3792,237 @@ export const AdminOverview: React.FC = () => {
                     </div>
                   );
                 })()
+              ) : orderPreviewTarget.source === 'restaurant' && restaurantPreviewData?.order ? (
+                (() => {
+                  const ord = restaurantPreviewData.order;
+                  const items = restaurantPreviewData.items;
+                  const statusBadge = getOrderStatusBadge(ord.status);
+                  const isCancelPending =
+                    ord.status === 'cancellation_pending' || Boolean((ord as any).cancellation_requested);
+                  const canDecideCancel = canDecideCancelBySource('restaurant');
+
+                  return (
+                    <div className="space-y-4">
+                      {/* Status & Timestamps */}
+                      <div className="p-3.5 rounded-2xl bg-slate-950/80 border border-slate-800 flex flex-wrap items-center justify-between gap-2">
+                        <div className="flex items-center gap-2">
+                          <span className="text-slate-400">حالة الطلب:</span>
+                          <span
+                            className={`text-xs font-black px-2.5 py-1 rounded-xl border ${statusBadge.cls}`}
+                          >
+                            {statusBadge.label}
+                          </span>
+                        </div>
+                        <span className="text-[11px] font-mono text-slate-400">
+                          تاريخ الإنشاء: {new Date(ord.created_at).toLocaleString('ar-EG')}
+                        </span>
+                      </div>
+
+                      {/* Pending Cancellation Banner & Decision */}
+                      {isCancelPending && (
+                        <div className="p-4 rounded-2xl bg-rose-950/35 border border-rose-500/35 space-y-3">
+                          <div className="space-y-1">
+                            <span className="text-xs font-black text-rose-300 flex items-center gap-1.5">
+                              <AlertTriangle className="w-4 h-4" />
+                              <span>طلب إلغاء طلب مطعم بانتظار قرار الإدارة</span>
+                            </span>
+                            {(ord as any).cancellation_reason && (
+                              <p className="text-xs text-rose-200">
+                                <span className="font-bold">سبب الإلغاء: </span>
+                                {(ord as any).cancellation_reason}
+                              </p>
+                            )}
+                          </div>
+
+                          {canDecideCancel ? (
+                            <div className="flex flex-wrap items-center gap-2 pt-1">
+                              <button
+                                type="button"
+                                disabled={isSubmittingCancelDecision}
+                                onClick={() =>
+                                  handlePromptCancellationDecision({
+                                    orderId: ord.id,
+                                    orderNumber: ord.order_number || ord.id.slice(0, 8),
+                                    source: 'restaurant',
+                                    customerName: ord.customer_name || 'عميل مطاعم',
+                                    restaurantName: ord.restaurant_name || null,
+                                    driverName: (ord as any).driver_name || null,
+                                    reason: (ord as any).cancellation_reason,
+                                    decision: 'approve_cancel',
+                                  })
+                                }
+                                className="px-3.5 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 disabled:opacity-50 text-white font-black flex items-center gap-1.5 cursor-pointer"
+                              >
+                                <Check className="w-4 h-4" />
+                                <span>قبول الإلغاء</span>
+                              </button>
+                              <button
+                                type="button"
+                                disabled={isSubmittingCancelDecision}
+                                onClick={() =>
+                                  handlePromptCancellationDecision({
+                                    orderId: ord.id,
+                                    orderNumber: ord.order_number || ord.id.slice(0, 8),
+                                    source: 'restaurant',
+                                    customerName: ord.customer_name || 'عميل مطاعم',
+                                    restaurantName: ord.restaurant_name || null,
+                                    driverName: (ord as any).driver_name || null,
+                                    reason: (ord as any).cancellation_reason,
+                                    decision: 'reject_cancel',
+                                  })
+                                }
+                                className="px-3.5 py-2 rounded-xl bg-emerald-600/20 hover:bg-emerald-600/30 disabled:opacity-50 text-emerald-300 border border-emerald-500/30 font-bold flex items-center gap-1.5 cursor-pointer"
+                              >
+                                <X className="w-4 h-4" />
+                                <span>رفض الإلغاء وإعادة الطلب للتنفيذ</span>
+                              </button>
+                            </div>
+                          ) : (
+                            <div className="text-[11px] text-slate-400">
+                              للعرض فقط — يتطلب صلاحية إدارة المطاعم لاتخاذ قرار الإلغاء.
+                            </div>
+                          )}
+                        </div>
+                      )}
+
+                      {/* Restaurant & Customer Info */}
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        <div className="p-3.5 rounded-2xl bg-slate-950/70 border border-slate-800 space-y-1.5">
+                          <span className="text-[10px] font-bold text-slate-500 block">
+                            المطعم الشريك
+                          </span>
+                          <div className="text-sm font-black text-amber-300 flex items-center gap-1.5">
+                            <UtensilsCrossed className="w-4 h-4" />
+                            <span>{ord.restaurant_name || 'مطعم غير محدد'}</span>
+                          </div>
+                          <div className="text-[11px] text-slate-400">
+                            مسار التوصيل: {ord.fulfillment_route === 'restaurant_delivery' ? 'توصيل المطعم الذاتي' : 'مناديب المنصة'}
+                          </div>
+                        </div>
+
+                        <div className="p-3.5 rounded-2xl bg-slate-950/70 border border-slate-800 space-y-1.5">
+                          <span className="text-[10px] font-bold text-slate-500 block">
+                            بيانات العميل والعنوان
+                          </span>
+                          <div className="text-sm font-black text-white">
+                            {ord.customer_name || 'عميل مطاعم'}
+                          </div>
+                          {ord.customer_phone && (
+                            <div className="text-xs font-mono text-emerald-400" dir="ltr">
+                              {ord.customer_phone}
+                            </div>
+                          )}
+                          <div className="text-[11px] text-slate-300">
+                            {ord.delivery_address || '—'}
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Driver Info if platform delivery */}
+                      {ord.fulfillment_route !== 'restaurant_delivery' && (
+                        <div className="p-3.5 rounded-2xl bg-slate-950/70 border border-slate-800 flex items-center justify-between gap-3">
+                          <div className="flex items-center gap-2.5">
+                            <Bike className="w-5 h-5 text-sky-400 shrink-0" />
+                            <div>
+                              <span className="text-[10px] text-slate-400 block">
+                                المندوب المكلف بالتوصيل
+                              </span>
+                              <span className="text-xs font-black text-white">
+                                {(ord as any).driver_name || 'لم يتم إسناد سائق بعد'}
+                              </span>
+                            </div>
+                          </div>
+                          {(ord as any).driver_phone && (
+                            <span
+                              className="font-mono text-xs text-sky-300 bg-slate-900 px-2.5 py-1 rounded-xl border border-slate-800"
+                              dir="ltr"
+                            >
+                              {(ord as any).driver_phone}
+                            </span>
+                          )}
+                        </div>
+                      )}
+
+                      {/* Financials */}
+                      <div className="grid grid-cols-3 gap-2.5">
+                        <div className="p-3 rounded-2xl bg-slate-950/70 border border-slate-800">
+                          <span className="text-[10px] text-slate-400 block">قيمة الوجبات</span>
+                          <span className="text-sm font-black font-mono text-white">
+                            {ord.subtotal !== null && ord.subtotal !== undefined
+                              ? `${Number(ord.subtotal).toLocaleString('en-US')} ج.م`
+                              : 'غير محدد'}
+                          </span>
+                        </div>
+                        <div className="p-3 rounded-2xl bg-slate-950/70 border border-slate-800">
+                          <span className="text-[10px] text-slate-400 block">رسوم التوصيل</span>
+                          <span className="text-sm font-black font-mono text-sky-300">
+                            {ord.delivery_fee !== null && ord.delivery_fee !== undefined
+                              ? `${Number(ord.delivery_fee).toLocaleString('en-US')} ج.م`
+                              : 'غير محدد'}
+                          </span>
+                        </div>
+                        <div className="p-3 rounded-2xl bg-slate-950/70 border border-amber-500/30">
+                          <span className="text-[10px] text-amber-300 block">الإجمالي الكلي</span>
+                          <span className="text-sm font-black font-mono text-amber-300">
+                            {ord.total_amount !== null && ord.total_amount !== undefined
+                              ? `${Number(ord.total_amount).toLocaleString('en-US')} ج.م`
+                              : 'غير محدد'}
+                          </span>
+                        </div>
+                      </div>
+
+                      {/* Order Items */}
+                      <div className="space-y-2">
+                        <span className="text-xs font-black text-white block">
+                          الوجبات والأصناف المسجلة ({items.length})
+                        </span>
+                        {items.length === 0 ? (
+                          <div className="p-4 rounded-2xl bg-slate-950/60 border border-slate-800 text-slate-400 text-center">
+                            لا توجد تفاصيل للأصناف مسجلة
+                          </div>
+                        ) : (
+                          <div className="rounded-2xl border border-slate-800 overflow-hidden divide-y divide-slate-800/80 bg-slate-950/70">
+                            {items.map((it: any) => (
+                              <div
+                                key={it.id || it.item_name}
+                                className="p-3 flex items-center justify-between gap-2"
+                              >
+                                <div>
+                                  <span className="font-bold text-white block">
+                                    {it.item_name_snapshot || it.item_name || it.title || 'وجبة'}
+                                  </span>
+                                  <span className="text-[11px] text-slate-400">
+                                    الكمية: {it.quantity || 1}
+                                  </span>
+                                </div>
+                                <span className="font-mono text-xs font-bold text-amber-300">
+                                  {it.line_total !== null && it.line_total !== undefined
+                                    ? `${Number(it.line_total).toLocaleString('en-US')} ج.م`
+                                    : it.total_price !== null && it.total_price !== undefined
+                                    ? `${Number(it.total_price).toLocaleString('en-US')} ج.م`
+                                    : it.unit_price_snapshot !== null && it.unit_price_snapshot !== undefined
+                                    ? `${Number(it.unit_price_snapshot).toLocaleString('en-US')} ج.م`
+                                    : it.unit_price !== null && it.unit_price !== undefined
+                                    ? `${Number(it.unit_price).toLocaleString('en-US')} ج.م`
+                                    : '—'}
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+
+                      {ord.notes && (
+                        <div className="p-3 rounded-2xl bg-slate-950/70 border border-slate-800">
+                          <span className="text-[10px] font-bold text-slate-400 block mb-1">
+                            ملاحظات الطلب:
+                          </span>
+                          <p className="text-xs text-slate-200 whitespace-pre-wrap">{ord.notes}</p>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()
               ) : null}
             </div>
 
@@ -3381,9 +4038,13 @@ export const AdminOverview: React.FC = () => {
                       openOrderId: target.id,
                       statusTab: 'all',
                     });
-                  } else {
+                  } else if (target.source === 'pharmacy') {
                     navigateToSection('pharmacy_orders', {
                       openOrderId: target.id,
+                    });
+                  } else {
+                    navigateToSection('restaurant_orders', {
+                      search: target.orderNumber || target.id,
                     });
                   }
                 }}
@@ -3391,7 +4052,7 @@ export const AdminOverview: React.FC = () => {
               >
                 <ExternalLink className="w-3.5 h-3.5" />
                 <span>
-                  فتح في قسم {orderPreviewTarget.source === 'delivery' ? 'طلبات الدليفري' : 'طلبات الصيدلية'} الكامل
+                  فتح في قسم {orderPreviewTarget.source === 'delivery' ? 'طلبات الدليفري' : orderPreviewTarget.source === 'pharmacy' ? 'طلبات الصيدلية' : 'طلبات المطاعم'} الكامل
                 </span>
               </button>
 
@@ -3450,7 +4111,13 @@ export const AdminOverview: React.FC = () => {
                       : 'تأكيد رفض طلب الإلغاء'}
                   </h3>
                   <p className="text-[11px] text-slate-400">
-                    الطلب #{cancelDecisionModal.orderNumber} ({cancelDecisionModal.source === 'delivery' ? 'دليفري' : 'صيدلية'})
+                    الطلب #{cancelDecisionModal.orderNumber} (
+                    {cancelDecisionModal.source === 'delivery'
+                      ? 'دليفري'
+                      : cancelDecisionModal.source === 'pharmacy'
+                      ? 'صيدلية'
+                      : 'مطعم'}
+                    )
                   </p>
                 </div>
               </div>
@@ -3470,14 +4137,35 @@ export const AdminOverview: React.FC = () => {
 
             <div className="p-4 sm:p-5 overflow-y-auto overscroll-contain space-y-4 flex-1 text-xs">
               <div className="p-3.5 rounded-2xl bg-slate-950 border border-slate-800 space-y-1.5">
+                {cancelDecisionModal.restaurantName && (
+                  <div className="flex items-center justify-between">
+                    <span className="text-slate-400">المطعم:</span>
+                    <span className="font-bold text-amber-300">
+                      {cancelDecisionModal.restaurantName}
+                    </span>
+                  </div>
+                )}
                 <div className="flex items-center justify-between">
                   <span className="text-slate-400">العميل:</span>
                   <span className="font-bold text-white">{cancelDecisionModal.customerName}</span>
                 </div>
                 {cancelDecisionModal.driverName && (
                   <div className="flex items-center justify-between">
-                    <span className="text-slate-400">السائق:</span>
+                    <span className="text-slate-400">السائق المكلف:</span>
                     <span className="font-bold text-sky-300">{cancelDecisionModal.driverName}</span>
+                  </div>
+                )}
+                {cancelDecisionModal.requesterType && (
+                  <div className="flex items-center justify-between">
+                    <span className="text-slate-400">مقدم طلب الإلغاء:</span>
+                    <span className="font-bold text-slate-200">
+                      {cancelDecisionModal.requesterType === 'restaurant'
+                        ? 'المطعم'
+                        : cancelDecisionModal.requesterType === 'driver'
+                        ? 'السائق'
+                        : 'العميل'}
+                      {cancelDecisionModal.requesterName ? ` (${cancelDecisionModal.requesterName})` : ''}
+                    </span>
                   </div>
                 )}
                 {cancelDecisionModal.reason && (
@@ -3502,14 +4190,20 @@ export const AdminOverview: React.FC = () => {
 
               <div className="space-y-1.5">
                 <label className="text-xs font-bold text-slate-300 block">
-                  ملاحظة الإدارة للسجل (اختياري):
+                  {cancelDecisionModal.source === 'restaurant' && cancelDecisionModal.decision === 'reject_cancel'
+                    ? 'سبب رفض طلب الإلغاء (إلزامي للتوثيق وإشعار مقدم الطلب) *:'
+                    : 'ملاحظة الإدارة للسجل (اختياري):'}
                 </label>
                 <textarea
                   rows={2}
                   value={cancelAdminNote}
                   onChange={(e) => setCancelAdminNote(e.target.value)}
                   disabled={isSubmittingCancelDecision}
-                  placeholder="أضف ملاحظة توضيحية تحفظ في سجل القرار..."
+                  placeholder={
+                    cancelDecisionModal.source === 'restaurant' && cancelDecisionModal.decision === 'reject_cancel'
+                      ? 'اكتب سبب رفض طلب الإلغاء بشكل إلزامي...'
+                      : 'أضف ملاحظة توضيحية تحفظ في سجل القرار...'
+                  }
                   className="w-full bg-slate-950 border border-slate-800 focus:border-emerald-500/50 rounded-2xl p-3 text-xs text-white placeholder:text-slate-500 focus:outline-none"
                 />
               </div>

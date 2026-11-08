@@ -464,14 +464,22 @@ export type RestaurantCancellationStatus = 'pending' | 'approved' | 'rejected' |
 
 export interface RestaurantCancellationRequest {
   id: string;
+  request_id?: string;
   order_id: string;
   order_number?: string;
+  order_status?: string;
+  fulfillment_route?: string;
   customer_name?: string;
   customer_phone?: string;
   restaurant_id?: string;
   restaurant_name?: string;
   reason: string;
+  request_reason?: string;
   status: RestaurantCancellationStatus;
+  request_status?: string;
+  requester_type?: 'customer' | 'driver' | 'restaurant' | string | null;
+  requester_name?: string | null;
+  requester_phone?: string | null;
   requested_by?: string | null;
   created_at: string;
   updated_at?: string;
