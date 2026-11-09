@@ -321,29 +321,37 @@ export const AdminProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       const now = new Date();
 
       if (dateFilter === 'today') {
-        start = new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString();
+        start = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0).toISOString();
+        end = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999).toISOString();
       } else if (dateFilter === 'yesterday') {
         const y = new Date(now);
         y.setDate(y.getDate() - 1);
-        start = new Date(y.getFullYear(), y.getMonth(), y.getDate()).toISOString();
-        end = new Date(y.getFullYear(), y.getMonth(), y.getDate(), 23, 59, 59).toISOString();
+        start = new Date(y.getFullYear(), y.getMonth(), y.getDate(), 0, 0, 0, 0).toISOString();
+        end = new Date(y.getFullYear(), y.getMonth(), y.getDate(), 23, 59, 59, 999).toISOString();
       } else if (dateFilter === 'last_7_days') {
         const d = new Date(now);
         d.setDate(d.getDate() - 7);
-        start = d.toISOString();
+        start = new Date(d.getFullYear(), d.getMonth(), d.getDate(), 0, 0, 0, 0).toISOString();
+        end = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999).toISOString();
       } else if (dateFilter === 'last_30_days') {
         const d = new Date(now);
         d.setDate(d.getDate() - 30);
-        start = d.toISOString();
+        start = new Date(d.getFullYear(), d.getMonth(), d.getDate(), 0, 0, 0, 0).toISOString();
+        end = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999).toISOString();
       } else if (dateFilter === 'this_month') {
-        start = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
+        start = new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0, 0).toISOString();
+        end = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999).toISOString();
       } else if (dateFilter === 'last_month') {
-        start = new Date(now.getFullYear(), now.getMonth() - 1, 1).toISOString();
-        end = new Date(now.getFullYear(), now.getMonth(), 0, 23, 59, 59).toISOString();
-      } else if (dateFilter === 'custom' && customStartDate) {
-        start = new Date(customStartDate).toISOString();
+        start = new Date(now.getFullYear(), now.getMonth() - 1, 1, 0, 0, 0, 0).toISOString();
+        end = new Date(now.getFullYear(), now.getMonth(), 0, 23, 59, 59, 999).toISOString();
+      } else if (dateFilter === 'custom') {
+        if (customStartDate) {
+          const s = customStartDate.trim();
+          start = s.length === 10 ? new Date(`${s}T00:00:00.000`).toISOString() : new Date(s).toISOString();
+        }
         if (customEndDate) {
-          end = new Date(customEndDate).toISOString();
+          const e = customEndDate.trim();
+          end = e.length === 10 ? new Date(`${e}T23:59:59.999`).toISOString() : new Date(e).toISOString();
         }
       }
 

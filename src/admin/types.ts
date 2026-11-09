@@ -364,6 +364,12 @@ export interface AdminOverviewStats {
   delivery_cancelled_orders?: number;
   delivery_total_drivers?: number;
   delivery_active_drivers?: number;
+  delivery_admin_active_drivers?: number;
+  delivery_available_now_drivers?: number;
+  delivery_busy_now_drivers?: number;
+  delivery_inactive_now_drivers?: number;
+  delivery_ineligible_drivers?: number;
+  delivery_assigned_active_orders?: number;
   delivery_inactive_drivers?: number;
   delivery_pending_drivers?: number;
   delivery_total_customers?: number;
@@ -529,6 +535,21 @@ export interface DriverDocuments {
   vehicle_license_path?: string | null;
 }
 
+export type DriverActivityStatus = 'available' | 'busy' | 'inactive' | 'ineligible';
+
+export interface DriverActivityMeta {
+  status: DriverActivityStatus;
+  label: string;
+  badgeClass: string;
+  dotClass: string;
+  isEligible: boolean;
+  isHeartbeatFresh: boolean;
+  isAvailableForWork: boolean;
+  hasActiveOrder: boolean;
+  heartbeatAgeSeconds: number | null;
+  heartbeatAgeFormatted: string;
+}
+
 export interface DeliveryDriver {
   id: string;
   user_id?: string | null;
@@ -557,6 +578,11 @@ export interface DeliveryDriver {
   approved_by?: string | null;
   created_at: string;
   updated_at: string;
+  // Realtime Driver Availability (Heartbeat & Activity)
+  is_available_for_work?: boolean;
+  availability_last_seen_at?: string | null;
+  activity_status?: DriverActivityStatus;
+  activity_meta?: DriverActivityMeta;
   // Computed stats from delivery_orders
   active_orders_count?: number;
   completed_orders_count?: number;
@@ -565,11 +591,15 @@ export interface DeliveryDriver {
 }
 
 export interface DeliveryDriverStatsSummary {
-  total_drivers: number;
-  active_drivers: number;
-  inactive_drivers: number;
-  total_assigned_orders: number;
+  total_drivers: number; // إجمالي حسابات السائقين
+  admin_active_drivers: number; // الحسابات المفعلة إدارياً
+  available_drivers: number; // السائقون المتاحون الآن
+  busy_drivers: number; // السائقون المشغولون الآن
+  inactive_drivers: number; // السائقون غير النشطين
+  ineligible_drivers: number; // الحساب غير معتمد أو معطل
+  total_assigned_orders: number; // طلبات السائقين المسندة قيد التنفيذ
   completed_orders: number;
+  active_drivers: number; // legacy alias = admin_active_drivers
 }
 
 export type DeliveryOrderStatus =

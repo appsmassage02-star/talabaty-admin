@@ -169,6 +169,7 @@ export const AdminDeliveryDrivers: React.FC = () => {
   const [approvalFilter, setApprovalFilter] = useState<string>(() => sectionFilter?.approvalFilter || 'all'); // 'all' | 'pending_approval' | 'approved' | 'rejected'
   const [governorateFilter, setGovernorateFilter] = useState<string>('all');
   const [docsFilter, setDocsFilter] = useState<string>('all'); // 'all' | 'complete' | 'incomplete'
+  const [activityStatusFilter, setActivityStatusFilter] = useState<string>('all'); // 'all' | 'available' | 'busy' | 'inactive' | 'ineligible'
   const [pendingOpenDriverId, setPendingOpenDriverId] = useState<string | null>(
     () => sectionFilter?.openDriverId || null
   );
@@ -368,6 +369,7 @@ export const AdminDeliveryDrivers: React.FC = () => {
         vehicleType: vehicleFilter !== 'all' ? vehicleFilter : undefined,
         status: approvalFilter !== 'all' ? approvalFilter : undefined,
         governorate: governorateFilter !== 'all' ? governorateFilter : undefined,
+        activityStatus: activityStatusFilter !== 'all' ? (activityStatusFilter as any) : undefined,
       });
 
       let loaded = res.drivers;
@@ -392,6 +394,7 @@ export const AdminDeliveryDrivers: React.FC = () => {
     approvalFilter,
     governorateFilter,
     docsFilter,
+    activityStatusFilter,
     getDocsCount,
     showToast,
   ]);
@@ -766,59 +769,112 @@ export const AdminDeliveryDrivers: React.FC = () => {
       </div>
 
       {/* ------------------------------------------------------------------- */}
-      {/* 2. Key Metrics Bar */}
+      {/* 2. Key Metrics Bar (Distinct Driver Accounts & Real Availability) */}
       {/* ------------------------------------------------------------------- */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 sm:gap-3.5">
         {/* Total Drivers */}
-        <div className="bg-slate-900/90 border border-slate-800/80 rounded-2xl p-4 flex items-center space-x-3 space-x-reverse shadow-sm">
-          <div className="w-11 h-11 rounded-xl bg-blue-500/10 border border-blue-500/20 text-blue-400 flex items-center justify-center shrink-0">
+        <div className="bg-slate-900/90 border border-slate-800/80 rounded-2xl p-3.5 flex items-center space-x-3 space-x-reverse shadow-sm">
+          <div className="w-10 h-10 rounded-xl bg-blue-500/10 border border-blue-500/20 text-blue-400 flex items-center justify-center shrink-0">
             <Bike className="w-5 h-5" />
           </div>
-          <div>
-            <span className="text-[11px] font-bold text-slate-400 block">إجمالي السائقين</span>
-            <span className="text-xl font-black text-white font-mono mt-0.5 block">
+          <div className="min-w-0">
+            <span className="text-[11px] font-bold text-slate-400 block truncate">إجمالي الحسابات</span>
+            <span className="text-lg font-black text-white font-mono mt-0.5 block">
               {stats.total_drivers}
             </span>
           </div>
         </div>
 
-        {/* Active Drivers */}
-        <div className="bg-slate-900/90 border border-slate-800/80 rounded-2xl p-4 flex items-center space-x-3 space-x-reverse shadow-sm">
-          <div className="w-11 h-11 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 flex items-center justify-center shrink-0">
+        {/* Admin Active Drivers */}
+        <div className="bg-slate-900/90 border border-slate-800/80 rounded-2xl p-3.5 flex items-center space-x-3 space-x-reverse shadow-sm">
+          <div className="w-10 h-10 rounded-xl bg-indigo-500/10 border border-indigo-500/20 text-indigo-400 flex items-center justify-center shrink-0">
+            <ShieldCheck className="w-5 h-5" />
+          </div>
+          <div className="min-w-0">
+            <span className="text-[11px] font-bold text-slate-400 block truncate">المفعلة إدارياً</span>
+            <span className="text-lg font-black text-indigo-300 font-mono mt-0.5 block">
+              {stats.admin_active_drivers ?? stats.active_drivers}
+            </span>
+          </div>
+        </div>
+
+        {/* Available Now */}
+        <div
+          onClick={() => setActivityStatusFilter((prev) => (prev === 'available' ? 'all' : 'available'))}
+          className={`bg-slate-900/90 border rounded-2xl p-3.5 flex items-center space-x-3 space-x-reverse shadow-sm cursor-pointer transition-colors ${
+            activityStatusFilter === 'available'
+              ? 'border-emerald-500/80 bg-emerald-500/5 ring-1 ring-emerald-500/30'
+              : 'border-slate-800/80 hover:border-emerald-500/40'
+          }`}
+          title="انقر لفلترة السائقين المتاحين للعمل الآن"
+        >
+          <div className="w-10 h-10 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 flex items-center justify-center shrink-0">
             <CheckCircle2 className="w-5 h-5" />
           </div>
-          <div>
-            <span className="text-[11px] font-bold text-slate-400 block">سائقين نشطين</span>
+          <div className="min-w-0">
+            <span className="text-[11px] font-bold text-slate-400 block truncate">متاح الآن</span>
             <div className="flex items-center space-x-1.5 space-x-reverse mt-0.5">
               <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
-              <span className="text-xl font-black text-emerald-400 font-mono">
-                {stats.active_drivers}
+              <span className="text-lg font-black text-emerald-400 font-mono">
+                {stats.available_drivers ?? 0}
               </span>
             </div>
           </div>
         </div>
 
-        {/* Inactive / Suspended Drivers */}
-        <div className="bg-slate-900/90 border border-slate-800/80 rounded-2xl p-4 flex items-center space-x-3 space-x-reverse shadow-sm">
-          <div className="w-11 h-11 rounded-xl bg-rose-500/10 border border-rose-500/20 text-rose-400 flex items-center justify-center shrink-0">
+        {/* Busy Now */}
+        <div
+          onClick={() => setActivityStatusFilter((prev) => (prev === 'busy' ? 'all' : 'busy'))}
+          className={`bg-slate-900/90 border rounded-2xl p-3.5 flex items-center space-x-3 space-x-reverse shadow-sm cursor-pointer transition-colors ${
+            activityStatusFilter === 'busy'
+              ? 'border-amber-500/80 bg-amber-500/5 ring-1 ring-amber-500/30'
+              : 'border-slate-800/80 hover:border-amber-500/40'
+          }`}
+          title="انقر لفلترة السائقين المشغولين بطلبات حالياً"
+        >
+          <div className="w-10 h-10 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-400 flex items-center justify-center shrink-0">
+            <Clock className="w-5 h-5" />
+          </div>
+          <div className="min-w-0">
+            <span className="text-[11px] font-bold text-slate-400 block truncate">مشغول بطلب</span>
+            <div className="flex items-center space-x-1.5 space-x-reverse mt-0.5">
+              <span className="w-2 h-2 rounded-full bg-amber-500 animate-pulse"></span>
+              <span className="text-lg font-black text-amber-400 font-mono">
+                {stats.busy_drivers ?? 0}
+              </span>
+            </div>
+          </div>
+        </div>
+
+        {/* Inactive Now (stale heartbeat or toggled off) */}
+        <div
+          onClick={() => setActivityStatusFilter((prev) => (prev === 'inactive' ? 'all' : 'inactive'))}
+          className={`bg-slate-900/90 border rounded-2xl p-3.5 flex items-center space-x-3 space-x-reverse shadow-sm cursor-pointer transition-colors ${
+            activityStatusFilter === 'inactive'
+              ? 'border-slate-600 bg-slate-800/50'
+              : 'border-slate-800/80 hover:border-slate-700'
+          }`}
+          title="انقر لفلترة السائقين غير النشطين"
+        >
+          <div className="w-10 h-10 rounded-xl bg-slate-800/80 border border-slate-700 text-slate-400 flex items-center justify-center shrink-0">
             <XCircle className="w-5 h-5" />
           </div>
-          <div>
-            <span className="text-[11px] font-bold text-slate-400 block">غير نشط / معطل</span>
-            <span className="text-xl font-black text-rose-400 font-mono mt-0.5 block">
-              {stats.inactive_drivers}
+          <div className="min-w-0">
+            <span className="text-[11px] font-bold text-slate-400 block truncate">غير نشط</span>
+            <span className="text-lg font-black text-slate-300 font-mono mt-0.5 block">
+              {stats.inactive_drivers ?? 0}
             </span>
           </div>
         </div>
 
-        {/* Assigned Orders */}
-        <div className="bg-slate-900/90 border border-slate-800/80 rounded-2xl p-4 flex items-center space-x-3 space-x-reverse shadow-sm">
-          <div className="w-11 h-11 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-400 flex items-center justify-center shrink-0">
+        {/* Assigned Orders In Progress */}
+        <div className="bg-slate-900/90 border border-slate-800/80 rounded-2xl p-3.5 flex items-center space-x-3 space-x-reverse shadow-sm">
+          <div className="w-10 h-10 rounded-xl bg-teal-500/10 border border-teal-500/20 text-teal-400 flex items-center justify-center shrink-0">
             <Package className="w-5 h-5" />
           </div>
-          <div>
-            <span className="text-[11px] font-bold text-slate-400 block">طلبات تم إسنادها</span>
-            <span className="text-xl font-black text-amber-400 font-mono mt-0.5 block">
+          <div className="min-w-0">
+            <span className="text-[11px] font-bold text-slate-400 block truncate">طلبات مسندة جارية</span>
+            <span className="text-lg font-black text-teal-400 font-mono mt-0.5 block">
               {stats.total_assigned_orders}
             </span>
           </div>
@@ -851,6 +907,21 @@ export const AdminDeliveryDrivers: React.FC = () => {
             )}
           </div>
 
+          {/* Filter by Live Activity Status */}
+          <div className="md:col-span-2">
+            <select
+              value={activityStatusFilter}
+              onChange={(e) => setActivityStatusFilter(e.target.value)}
+              className="w-full px-3 py-2.5 bg-slate-950/80 border border-slate-800 rounded-xl text-xs text-slate-200 focus:outline-none focus:border-emerald-500/50 transition-colors font-bold"
+            >
+              <option value="all">حالة العمل: الكل</option>
+              <option value="available">🟢 متاح الآن للعمل</option>
+              <option value="busy">🟡 مشغول بطلب جاري</option>
+              <option value="inactive">⚪ غير نشط (لا يوجد اتصال)</option>
+              <option value="ineligible">🔴 غير معتمد أو معطل</option>
+            </select>
+          </div>
+
           {/* Filter by Approval Status */}
           <div className="md:col-span-2">
             <select
@@ -858,23 +929,23 @@ export const AdminDeliveryDrivers: React.FC = () => {
               onChange={(e) => setApprovalFilter(e.target.value)}
               className="w-full px-3 py-2.5 bg-slate-950/80 border border-slate-800 rounded-xl text-xs text-slate-200 focus:outline-none focus:border-emerald-500/50 transition-colors font-medium"
             >
-              <option value="all">حالة الاعتماد: الكل</option>
+              <option value="all">الاعتماد: الكل</option>
               <option value="pending_approval">⏳ قيد المراجعة</option>
               <option value="approved">🟢 مقبول / معتمد</option>
               <option value="rejected">🔴 مرفوض</option>
             </select>
           </div>
 
-          {/* Filter by Activity Status */}
+          {/* Filter by Admin Active Status */}
           <div className="md:col-span-2">
             <select
               value={activeFilter}
               onChange={(e) => setActiveFilter(e.target.value)}
               className="w-full px-3 py-2.5 bg-slate-950/80 border border-slate-800 rounded-xl text-xs text-slate-200 focus:outline-none focus:border-emerald-500/50 transition-colors font-medium"
             >
-              <option value="all">حالة النشاط: الكل</option>
-              <option value="active">🟢 نشط</option>
-              <option value="inactive">🔴 غير نشط</option>
+              <option value="all">التفعيل الإداري: الكل</option>
+              <option value="active">مفعل إدارياً</option>
+              <option value="inactive">معطل إدارياً</option>
             </select>
           </div>
 
@@ -894,19 +965,6 @@ export const AdminDeliveryDrivers: React.FC = () => {
             </select>
           </div>
 
-          {/* Filter by Uploaded Documents */}
-          <div className="md:col-span-2">
-            <select
-              value={docsFilter}
-              onChange={(e) => setDocsFilter(e.target.value)}
-              className="w-full px-3 py-2.5 bg-slate-950/80 border border-slate-800 rounded-xl text-xs text-slate-200 focus:outline-none focus:border-emerald-500/50 transition-colors font-medium"
-            >
-              <option value="all">المستندات: الكل</option>
-              <option value="complete">✅ مستندات مكتملة (4/4)</option>
-              <option value="incomplete">⚠️ مستندات ناقصة (&lt; 4)</option>
-            </select>
-          </div>
-
           {/* Reset Filters */}
           <div className="md:col-span-1">
             <button
@@ -918,9 +976,10 @@ export const AdminDeliveryDrivers: React.FC = () => {
                 setApprovalFilter('all');
                 setGovernorateFilter('all');
                 setDocsFilter('all');
+                setActivityStatusFilter('all');
               }}
               className="w-full py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white rounded-xl text-xs font-bold transition-colors cursor-pointer flex items-center justify-center space-x-1 space-x-reverse"
-              title="إعادة ضبط الفلاتر"
+              title="إعادة تعيين الفلاتر"
             >
               <Filter className="w-3.5 h-3.5" />
               <span>مسح</span>
@@ -958,7 +1017,8 @@ export const AdminDeliveryDrivers: React.FC = () => {
                   <th className="p-4 text-center">المحافظة / المركز</th>
                   <th className="p-4 text-center">المستندات (4)</th>
                   <th className="p-4 text-center">حالة الاعتماد</th>
-                  <th className="p-4 text-center">حالة النشاط</th>
+                  <th className="p-4 text-center">التفعيل الإداري</th>
+                  <th className="p-4 text-center">حالة العمل والتوافر</th>
                   <th className="p-4 text-center">المركبة</th>
                   <th className="p-4 text-center">الطلبات</th>
                   <th className="p-4 text-center">تاريخ التسجيل</th>
@@ -972,6 +1032,8 @@ export const AdminDeliveryDrivers: React.FC = () => {
                   const isApproved = driver.status === 'approved';
                   const isRejected = driver.status === 'rejected';
                   const docsCount = getDocsCount(driver);
+                  const actMeta = driver.activity_meta;
+                  const actStatus = driver.activity_status || 'inactive';
 
                   return (
                     <tr
@@ -1127,7 +1189,7 @@ export const AdminDeliveryDrivers: React.FC = () => {
                         )}
                       </td>
 
-                      {/* Active Indicator */}
+                      {/* Administrative Active Toggle */}
                       <td className="p-4 text-center">
                         <button
                           type="button"
@@ -1137,15 +1199,47 @@ export const AdminDeliveryDrivers: React.FC = () => {
                               ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/20'
                               : 'bg-rose-500/10 border-rose-500/30 text-rose-400 hover:bg-rose-500/20'
                           }`}
-                          title="انقر لتبديل حالة النشاط"
+                          title="تفعيل/تعطيل حساب السائق إدارياً"
                         >
                           <span
                             className={`w-2 h-2 rounded-full ${
-                              driver.is_active ? 'bg-emerald-500 animate-pulse' : 'bg-rose-500'
+                              driver.is_active ? 'bg-emerald-500' : 'bg-rose-500'
                             }`}
                           />
-                          <span>{driver.is_active ? 'نشط' : 'غير نشط'}</span>
+                          <span>{driver.is_active ? 'مفعل إدارياً' : 'معطل إدارياً'}</span>
                         </button>
+                      </td>
+
+                      {/* Live Work & Availability Status (Heartbeat <= 2 min) */}
+                      <td className="p-4 text-center">
+                        <div className="flex flex-col items-center gap-1">
+                          {actStatus === 'available' && (
+                            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-bold bg-emerald-500/15 border border-emerald-500/30 text-emerald-400 shadow-sm shadow-emerald-500/10">
+                              <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping" />
+                              <span>متاح الآن</span>
+                            </span>
+                          )}
+                          {actStatus === 'busy' && (
+                            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-bold bg-amber-500/15 border border-amber-500/30 text-amber-400 shadow-sm shadow-amber-500/10">
+                              <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse" />
+                              <span>مشغول بطلب</span>
+                            </span>
+                          )}
+                          {actStatus === 'inactive' && (
+                            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-bold bg-slate-800 border border-slate-700 text-slate-400">
+                              <span className="w-1.5 h-1.5 rounded-full bg-slate-500" />
+                              <span>{driver.is_available_for_work ? 'انقطع الاتصال' : 'متوقف عن العمل'}</span>
+                            </span>
+                          )}
+                          {actStatus === 'ineligible' && (
+                            <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-bold bg-rose-500/10 border border-rose-500/20 text-rose-400">
+                              <span>غير مؤهل للعمل</span>
+                            </span>
+                          )}
+                          <span className="text-[10px] text-slate-500 font-mono block">
+                            {actMeta?.heartbeat_label || (driver.availability_last_seen_at ? 'متصل سابقاً' : 'لا يوجد نبض')}
+                          </span>
+                        </div>
                       </td>
 
                       {/* Vehicle Type */}
@@ -1403,21 +1497,61 @@ export const AdminDeliveryDrivers: React.FC = () => {
                       </span>
                     </div>
 
-                    {/* Activity Status */}
+                    {/* Administrative Status */}
                     <div className="p-3.5 bg-slate-950/60 rounded-xl border border-slate-800">
-                      <span className="text-[10px] text-slate-500 font-bold block">حالة النشاط الحالية</span>
+                      <span className="text-[10px] text-slate-500 font-bold block">التفعيل الإداري</span>
                       <div className="mt-1 flex items-center space-x-1.5 space-x-reverse font-bold">
                         {driverDetails.is_active ? (
-                          <span className="text-emerald-400 flex items-center space-x-1.5 space-x-reverse">
-                            <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
-                            <span>نشط (متاح لتلقي الطلبات)</span>
+                          <span className="text-emerald-400 flex items-center space-x-1.5 space-x-reverse text-xs">
+                            <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
+                            <span>مفعل إدارياً بواسطة الإدارة</span>
                           </span>
                         ) : (
-                          <span className="text-rose-400 flex items-center space-x-1.5 space-x-reverse">
+                          <span className="text-rose-400 flex items-center space-x-1.5 space-x-reverse text-xs">
                             <span className="w-2 h-2 rounded-full bg-rose-500"></span>
-                            <span>غير نشط (متوقف عن العمل)</span>
+                            <span>معطل إدارياً (محظور من العمل)</span>
                           </span>
                         )}
+                      </div>
+                    </div>
+
+                    {/* Driver App Availability & Heartbeat */}
+                    <div className="p-3.5 bg-slate-950/60 rounded-xl border border-slate-800">
+                      <span className="text-[10px] text-slate-500 font-bold block">حالة العمل والتوافر (تطبيق السائق)</span>
+                      <div className="mt-1 space-y-1">
+                        <div className="flex items-center space-x-1.5 space-x-reverse font-bold text-xs">
+                          {driverDetails.activity_status === 'available' && (
+                            <span className="text-emerald-400 flex items-center gap-1.5">
+                              <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping"></span>
+                              <span>متاح الآن (جاهز لاستقبال الطلبات)</span>
+                            </span>
+                          )}
+                          {driverDetails.activity_status === 'busy' && (
+                            <span className="text-amber-400 flex items-center gap-1.5">
+                              <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse"></span>
+                              <span>مشغول بطلب جارٍ حالياً</span>
+                            </span>
+                          )}
+                          {driverDetails.activity_status === 'inactive' && (
+                            <span className="text-slate-400 flex items-center gap-1.5">
+                              <span className="w-2 h-2 rounded-full bg-slate-500"></span>
+                              <span>
+                                {driverDetails.is_available_for_work
+                                  ? 'انقطع الاتصال (لا يوجد نبض حديث)'
+                                  : 'متوقف عن العمل (من تطبيق السائق)'}
+                              </span>
+                            </span>
+                          )}
+                          {driverDetails.activity_status === 'ineligible' && (
+                            <span className="text-rose-400 flex items-center gap-1.5">
+                              <span className="w-2 h-2 rounded-full bg-rose-500"></span>
+                              <span>غير مؤهل (الحساب غير معتمد أو معطل إدارياً)</span>
+                            </span>
+                          )}
+                        </div>
+                        <span className="text-[10px] text-slate-500 font-mono block">
+                          آخر نبض: {driverDetails.availability_last_seen_at ? new Date(driverDetails.availability_last_seen_at).toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : 'لا يوجد نبض مسجل'} ({driverDetails.activity_meta?.heartbeat_label || 'غير متصل'})
+                        </span>
                       </div>
                     </div>
 

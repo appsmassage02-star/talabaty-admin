@@ -345,6 +345,9 @@ export const AdminOverview: React.FC = () => {
           })
           .catch(() => {});
       }
+
+      // Refresh overview aggregate stats in sync with operational queues
+      refreshStats().catch(() => {});
     }, 30000);
 
     // 2. Realtime Subscriptions with Debounce
@@ -353,6 +356,7 @@ export const AdminOverview: React.FC = () => {
       if (debounceTimer) clearTimeout(debounceTimer);
       debounceTimer = setTimeout(() => {
         loadOperationalData();
+        refreshStats().catch(() => {});
       }, 1000);
     };
 
@@ -384,7 +388,9 @@ export const AdminOverview: React.FC = () => {
         handleRealtimeChange
       )
       .subscribe((status, err) => {
-        if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+        if (status === 'SUBSCRIBED') {
+          // Connected successfully
+        } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
           console.warn('Realtime subscription notice (falling back to polling):', status, err);
         }
       });
@@ -394,7 +400,7 @@ export const AdminOverview: React.FC = () => {
       if (debounceTimer) clearTimeout(debounceTimer);
       supabase.removeChannel(channel);
     };
-  }, [loadOperationalData, canViewRestaurants]);
+  }, [loadOperationalData, refreshStats, canViewRestaurants]);
 
   const handleFullRefresh = async () => {
     await Promise.all([refreshStats(), loadOperationalData()]);
@@ -1737,22 +1743,37 @@ export const AdminOverview: React.FC = () => {
             </div>
 
             <div
-              className="mt-4 pt-3 border-t border-slate-800/80 flex items-center justify-between text-xs"
+              className="mt-4 pt-3 border-t border-slate-800/80 flex flex-col gap-2 text-xs"
               onClick={(e) => e.stopPropagation()}
             >
-              <button
-                type="button"
-                onClick={() =>
-                  navigateToSection('delivery_drivers', { approvalFilter: 'pending_approval' })
-                }
-                className="text-indigo-300 hover:text-indigo-200 font-bold flex items-center gap-1 cursor-pointer"
-              >
-                <span>مراجعة طلبات الانضمام</span>
-                <ChevronLeft className="w-3.5 h-3.5" />
-              </button>
-              <span className="text-[11px] text-slate-400 font-mono">
-                إجمالي النشطين: {isStatsLoading ? '...' : (stats?.delivery_active_drivers ?? '—')}
-              </span>
+              <div className="flex items-center justify-between">
+                <button
+                  type="button"
+                  onClick={() =>
+                    navigateToSection('delivery_drivers', { approvalFilter: 'pending_approval' })
+                  }
+                  className="text-indigo-300 hover:text-indigo-200 font-bold flex items-center gap-1 cursor-pointer"
+                >
+                  <span>مراجعة طلبات الانضمام</span>
+                  <ChevronLeft className="w-3.5 h-3.5" />
+                </button>
+                <span className="text-[11px] text-slate-400 font-mono">
+                  المفعلة إدارياً: {isStatsLoading ? '...' : (stats?.delivery_admin_active_drivers ?? stats?.delivery_active_drivers ?? '—')}
+                </span>
+              </div>
+              <div className="flex items-center gap-3 text-[11px] font-bold border-t border-slate-800/60 pt-2 text-slate-400">
+                <span className="flex items-center gap-1 text-emerald-400" title="جاهز للعمل ونبضه نشط خلال آخر دقيقتين">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+                  متاح الآن: {isStatsLoading ? '...' : (stats?.delivery_available_now_drivers ?? 0)}
+                </span>
+                <span className="flex items-center gap-1 text-amber-400" title="مكلف بطلب جارٍ حالياً">
+                  <span className="w-1.5 h-1.5 rounded-full bg-amber-400"></span>
+                  مشغول: {isStatsLoading ? '...' : (stats?.delivery_busy_now_drivers ?? 0)}
+                </span>
+                <span className="flex items-center gap-1 text-slate-400" title="متوقف عن العمل أو انقطع اتصاله">
+                  غير نشط: {isStatsLoading ? '...' : (stats?.delivery_inactive_now_drivers ?? 0)}
+                </span>
+              </div>
             </div>
           </div>
 

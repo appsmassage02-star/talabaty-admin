@@ -486,10 +486,10 @@ export const AdminPharmacyManagement: React.FC = () => {
     orderPage,
   ]);
 
-  const loadAvailableDrivers = useCallback(async () => {
+  const loadAvailableDrivers = useCallback(async (currentAssignedId?: string) => {
     try {
-      const res = await adminService.getDeliveryDrivers();
-      setAvailableDrivers((res.drivers || []).filter((d) => d.is_active));
+      const drivers = await adminService.getAvailableDeliveryDriversForAssign(currentAssignedId);
+      setAvailableDrivers(drivers);
     } catch {
       // ignore
     }
@@ -502,17 +502,14 @@ export const AdminPharmacyManagement: React.FC = () => {
       setOrderDetailsError(null);
       setCancelDecisionNote('');
       try {
-        const [detailsRes] = await Promise.all([
-          adminService.getPharmacyOrderDetails(orderId),
-          loadAvailableDrivers(),
-        ]);
+        const detailsRes = await adminService.getPharmacyOrderDetails(orderId);
         if (detailsRes.error) {
           setOrderDetailsError(detailsRes.error);
         }
         setOrderDetails(detailsRes);
-        setSelectedDriverIdForAssign(
-          detailsRes.deliveryOrder?.assigned_driver_id || ''
-        );
+        const currentDriverId = detailsRes.deliveryOrder?.assigned_driver_id || '';
+        setSelectedDriverIdForAssign(currentDriverId);
+        await loadAvailableDrivers(currentDriverId);
       } finally {
         setIsLoadingOrderDetails(false);
       }
@@ -2766,32 +2763,45 @@ export const AdminPharmacyManagement: React.FC = () => {
                           الطلب في حالة نهائية ({getPharmacyStatusMeta(orderDetails.order.status).label})؛ لا يمكن إعادة إسناد مندوب.
                         </div>
                       ) : (
-                        <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
-                          <select
-                            value={selectedDriverIdForAssign}
-                            onChange={(e) => setSelectedDriverIdForAssign(e.target.value)}
-                            className="flex-1 bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white outline-none"
-                          >
-                            <option value="">— اختر مندوب توصيل نشط —</option>
-                            {availableDrivers.map((drv) => (
-                              <option key={drv.id} value={drv.id}>
-                                {drv.full_name} ({drv.phone})
-                              </option>
-                            ))}
-                          </select>
-                          <button
-                            type="button"
-                            disabled={isAssigningDriver || !selectedDriverIdForAssign}
-                            onClick={handleAssignDriver}
-                            className="px-4 py-2 rounded-xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-bold flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50"
-                          >
-                            {isAssigningDriver ? (
-                              <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                            ) : (
-                              <Check className="w-3.5 h-3.5" />
-                            )}
-                            <span>إسناد المندوب</span>
-                          </button>
+                        <div className="space-y-2">
+                          {availableDrivers.length === 0 ? (
+                            <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/20 text-xs text-amber-300 flex items-center gap-2">
+                              <AlertTriangle className="w-4 h-4 shrink-0 text-amber-400" />
+                              <span>
+                                لا يوجد مناديب توصيل متاحون حالياً للعمل (جميع المناديب إما غير نشطين، منقطع اتصالهم أو مشغولون بطلبات جارية).
+                              </span>
+                            </div>
+                          ) : null}
+                          <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+                            <select
+                              value={selectedDriverIdForAssign}
+                              onChange={(e) => setSelectedDriverIdForAssign(e.target.value)}
+                              className="flex-1 bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white outline-none"
+                            >
+                              <option value="">— اختر مندوب توصيل متاح الآن —</option>
+                              {availableDrivers.map((drv) => {
+                                const isCurrent = drv.id === orderDetails.deliveryOrder?.assigned_driver_id;
+                                return (
+                                  <option key={drv.id} value={drv.id}>
+                                    {drv.full_name} ({drv.phone}) {isCurrent ? '— (المندوب الحالي لهذا الطلب)' : '— [متاح الآن]'}
+                                  </option>
+                                );
+                              })}
+                            </select>
+                            <button
+                              type="button"
+                              disabled={isAssigningDriver || !selectedDriverIdForAssign}
+                              onClick={handleAssignDriver}
+                              className="px-4 py-2 rounded-xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-bold flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50"
+                            >
+                              {isAssigningDriver ? (
+                                <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                              ) : (
+                                <Check className="w-3.5 h-3.5" />
+                              )}
+                              <span>إسناد المندوب</span>
+                            </button>
+                          </div>
                         </div>
                       )}
                     </div>
