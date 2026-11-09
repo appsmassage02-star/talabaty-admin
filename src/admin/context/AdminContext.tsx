@@ -26,7 +26,7 @@ interface AdminContextType {
   isAdminAuthenticated: boolean;
   adminUser: AdminUser | null;
   adminRole: AdminRole;
-  hasPermission: (permission: AdminPermission) => boolean;
+  hasPermission: (permission: AdminPermission | string) => boolean;
   adminAuthError: string | null;
   adminSignIn: (email: string, pass: string) => Promise<{ success: boolean; error?: string }>;
   adminSignOut: () => Promise<void>;
@@ -152,32 +152,55 @@ export const AdminProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     }, 3500);
   }, []);
 
-  // Permission Check Logic
-  const hasPermission = useCallback((permission: AdminPermission): boolean => {
-    if (!adminUser) return false;
-    if (adminUser.role === 'SUPER_ADMIN') return true;
-
-    if (adminUser.role === 'ADMIN') {
-      return permission !== 'admins.delete' && permission !== 'admins.manage';
+  // Permission Check Logic (Strict Hierarchical RBAC + Custom Permissions + Security Fences)
+  const hasPermission = useCallback((permission: AdminPermission | string): boolean => {
+    // 1. Unauthenticated or deactivated admin check
+    if (!adminUser || !adminUser.is_active) {
+      return false;
     }
 
-    if (adminUser.role === 'CONTENT_MANAGER') {
-      return (
+    // 2. SUPER_ADMIN has unrestricted global access
+    if (adminUser.role === 'SUPER_ADMIN') {
+      return true;
+    }
+
+    // 3. Absolute Security Fence: Admin user management is strictly reserved for SUPER_ADMIN
+    if (permission === 'admins.manage' || permission === 'admins.delete') {
+      return false;
+    }
+
+    // 4. Strict READ_ONLY Role Fence: Prohibited from any mutation/write/manage/send operations
+    if (adminUser.role === 'READ_ONLY') {
+      const isViewOnly = permission.endsWith('.view') || permission === 'dashboard.view';
+      if (!isViewOnly) {
+        return false;
+      }
+      return true;
+    }
+
+    // 5. Evaluate Role Baseline Permissions
+    let hasRoleDefault = false;
+
+    if (adminUser.role === 'ADMIN') {
+      // General Admin has access to all operational modules (admins.manage/delete already fenced above)
+      hasRoleDefault = true;
+    } else if (adminUser.role === 'CONTENT_MANAGER') {
+      hasRoleDefault = (
         permission.startsWith('categories.') ||
         permission.startsWith('products.') ||
         permission === 'restaurants.view' ||
+        permission === 'orders.view' ||
         permission === 'notifications.send' ||
         permission === 'dashboard.view' ||
         permission === 'analytics.view'
       );
-    }
-
-    if (adminUser.role === 'SUPPORT') {
-      return (
+    } else if (adminUser.role === 'SUPPORT') {
+      hasRoleDefault = (
         permission === 'dashboard.view' ||
         permission.startsWith('users.') ||
         permission.startsWith('delivery.') ||
         permission === 'restaurants.view' ||
+        permission === 'orders.view' ||
         permission === 'households.view' ||
         permission === 'invoices.view' ||
         permission === 'audit.view' ||
@@ -185,14 +208,19 @@ export const AdminProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       );
     }
 
-    if (adminUser.role === 'READ_ONLY') {
-      return permission.endsWith('.view') || permission === 'dashboard.view';
-    }
-
-    if (adminUser.custom_permissions && adminUser.custom_permissions.includes(permission)) {
+    if (hasRoleDefault) {
       return true;
     }
 
+    // 6. Evaluate Custom Permissions (Explicit grant to extend non-super-admin roles)
+    if (
+      Array.isArray(adminUser.custom_permissions) &&
+      adminUser.custom_permissions.includes(permission as AdminPermission)
+    ) {
+      return true;
+    }
+
+    // 7. Default Deny
     return false;
   }, [adminUser]);
 
@@ -252,10 +280,21 @@ export const AdminProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         // Trigger non-blocking background sync once authenticated
         syncAdminAssetsInBackground().catch(() => {});
       } else {
-        // If check failed due to network error while a cached admin exists for this user, preserve offline access
-        if (checkErr && restoreCachedOfflineAdmin()) {
+        // Authoritative rejection (e.g. account deactivated or not an admin): purge cache immediately
+        const isAuthoritativeRejection = checkErr && (
+          checkErr.includes('تعطيل') ||
+          checkErr.includes('ليس مسجلاً') ||
+          checkErr.includes('لا يمتلك')
+        );
+
+        if (!isAuthoritativeRejection && checkErr && restoreCachedOfflineAdmin()) {
           return;
         }
+
+        try {
+          window.localStorage.removeItem(CACHED_ADMIN_USER_KEY);
+        } catch {}
+
         setIsAdminAuthenticated(false);
         setAdminUser(null);
         if (checkErr) {

@@ -34,7 +34,9 @@ export type AdminPermission =
   | 'admins.delete'
   | 'audit.view'
   | 'restaurants.view'
-  | 'restaurants.manage';
+  | 'restaurants.manage'
+  | 'orders.view'
+  | 'orders.manage';
 
 export * from './types/restaurantAdminTypes';
 

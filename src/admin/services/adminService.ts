@@ -137,19 +137,30 @@ export const adminService = {
         .from('admin_users')
         .select('*')
         .eq('user_id', userId)
-        .eq('is_active', true)
         .maybeSingle();
-
-      if (!error && data) {
-        return { isAdmin: true, adminRecord: data as AdminUser };
-      }
 
       if (error) {
         console.warn('Admin status check query error:', error);
         return { isAdmin: false, adminRecord: null, error: error.message };
       }
 
-      return { isAdmin: false, adminRecord: null };
+      if (!data) {
+        return {
+          isAdmin: false,
+          adminRecord: null,
+          error: 'عذراً! هذا الحساب ليس مسجلاً ضمن فريق المشرفين للدخول إلى لوحة التحكم.',
+        };
+      }
+
+      if (!data.is_active) {
+        return {
+          isAdmin: false,
+          adminRecord: null,
+          error: 'تم تعطيل حساب المشرف هذا من قبل الإدارة. يرجى التواصل مع المسؤول الأعلى.',
+        };
+      }
+
+      return { isAdmin: true, adminRecord: data as AdminUser };
     } catch (e: any) {
       console.warn('Admin status check exception:', e);
       return { isAdmin: false, adminRecord: null, error: e?.message };
