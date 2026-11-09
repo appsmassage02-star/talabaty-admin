@@ -173,6 +173,8 @@ export const AdminOverview: React.FC = () => {
   const [restaurantStatsError, setRestaurantStatsError] = useState<string | null>(null);
 
   const [assignedSearch, setAssignedSearch] = useState<string>('');
+  const [pendingSearch, setPendingSearch] = useState<string>('');
+  const [cancellationSearch, setCancellationSearch] = useState<string>('');
   const [activeQueueTab, setActiveQueueTab] = useState<
     'assigned' | 'pending_review' | 'cancellations' | 'drivers'
   >('assigned');
@@ -318,6 +320,34 @@ export const AdminOverview: React.FC = () => {
   useEffect(() => {
     loadOperationalData();
 
+    // 1. Fallback Periodic Polling (every 30 seconds):
+    // Crucial for tables like restaurant_delivery_orders that are not in Supabase Realtime publication,
+    // and to gracefully recover from network drops or missed websocket events.
+    const fallbackPollInterval = setInterval(() => {
+      adminService
+        .getOperationalCommandCenterData()
+        .then((cmdRes) => {
+          if (cmdRes?.data) {
+            setCommandData(cmdRes.data);
+            setCommandError(null);
+          }
+        })
+        .catch(() => {});
+
+      if (canViewRestaurants) {
+        restaurantAdminService
+          .getOverviewStats()
+          .then((restRes) => {
+            if (restRes?.stats) {
+              setRestaurantStats(restRes.stats);
+              setRestaurantStatsError(null);
+            }
+          })
+          .catch(() => {});
+      }
+    }, 30000);
+
+    // 2. Realtime Subscriptions with Debounce
     let debounceTimer: ReturnType<typeof setTimeout> | null = null;
     const handleRealtimeChange = () => {
       if (debounceTimer) clearTimeout(debounceTimer);
@@ -335,6 +365,11 @@ export const AdminOverview: React.FC = () => {
       )
       .on(
         'postgres_changes',
+        { event: '*', schema: 'public', table: 'delivery_drivers' },
+        handleRealtimeChange
+      )
+      .on(
+        'postgres_changes',
         { event: '*', schema: 'public', table: 'pharmacy_orders' },
         handleRealtimeChange
       )
@@ -348,18 +383,18 @@ export const AdminOverview: React.FC = () => {
         { event: '*', schema: 'public', table: 'restaurant_orders' },
         handleRealtimeChange
       )
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'restaurant_delivery_orders' },
-        handleRealtimeChange
-      )
-      .subscribe();
+      .subscribe((status, err) => {
+        if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+          console.warn('Realtime subscription notice (falling back to polling):', status, err);
+        }
+      });
 
     return () => {
+      clearInterval(fallbackPollInterval);
       if (debounceTimer) clearTimeout(debounceTimer);
       supabase.removeChannel(channel);
     };
-  }, [loadOperationalData]);
+  }, [loadOperationalData, canViewRestaurants]);
 
   const handleFullRefresh = async () => {
     await Promise.all([refreshStats(), loadOperationalData()]);
@@ -968,14 +1003,40 @@ export const AdminOverview: React.FC = () => {
   }, [assignedOrdersList, assignedSourceFilter, assignedSearch]);
 
   const filteredPendingReviewOrders = useMemo(() => {
-    if (pendingSourceFilter === 'all') return pendingReviewList;
-    return pendingReviewList.filter((o) => o.source === pendingSourceFilter);
-  }, [pendingReviewList, pendingSourceFilter]);
+    let list = pendingReviewList;
+    if (pendingSourceFilter !== 'all') {
+      list = list.filter((o) => o.source === pendingSourceFilter);
+    }
+    const q = pendingSearch.trim().toLowerCase();
+    if (!q) return list;
+    return list.filter(
+      (o) =>
+        (o.customer_name || '').toLowerCase().includes(q) ||
+        (o.order_number || '').toLowerCase().includes(q) ||
+        (o.restaurant_name && o.restaurant_name.toLowerCase().includes(q)) ||
+        (o.customer_phone && o.customer_phone.includes(q)) ||
+        (o.governorate_name && o.governorate_name.toLowerCase().includes(q))
+    );
+  }, [pendingReviewList, pendingSourceFilter, pendingSearch]);
 
   const filteredCancellationRequests = useMemo(() => {
-    if (cancellationSourceFilter === 'all') return cancellationRequestsList;
-    return cancellationRequestsList.filter((o) => o.source === cancellationSourceFilter);
-  }, [cancellationRequestsList, cancellationSourceFilter]);
+    let list = cancellationRequestsList;
+    if (cancellationSourceFilter !== 'all') {
+      list = list.filter((o) => o.source === cancellationSourceFilter);
+    }
+    const q = cancellationSearch.trim().toLowerCase();
+    if (!q) return list;
+    return list.filter(
+      (o) =>
+        (o.customer_name || '').toLowerCase().includes(q) ||
+        (o.order_number || '').toLowerCase().includes(q) ||
+        (o.restaurant_name && o.restaurant_name.toLowerCase().includes(q)) ||
+        (o.driver_name && o.driver_name.toLowerCase().includes(q)) ||
+        (o.reason && o.reason.toLowerCase().includes(q)) ||
+        (o.customer_phone && o.customer_phone.includes(q)) ||
+        (o.requester_name && o.requester_name.toLowerCase().includes(q))
+    );
+  }, [cancellationRequestsList, cancellationSourceFilter, cancellationSearch]);
 
   // Real calculated operational totals (null if stats/commandData not loaded yet)
   const pendingDeliveryOrders = stats
@@ -992,7 +1053,8 @@ export const AdminOverview: React.FC = () => {
     ? commandData.counts.pharmacy_pending_review
     : null;
 
-  const pendingRestaurantOrders = commandData?.counts?.restaurant_pending_review ?? 0;
+  const pendingRestaurantOrders =
+    stats?.restaurant_pending_orders ?? commandData?.counts?.restaurant_pending_review ?? 0;
 
   const totalPendingReviewOrders =
     pendingDeliveryOrders !== null || pendingPharmacyOrders !== null || pendingRestaurantOrders > 0
@@ -1007,24 +1069,25 @@ export const AdminOverview: React.FC = () => {
 
   const cancelledDelivery = stats ? stats.delivery_cancelled_orders ?? 0 : null;
 
+  const cancellationPendingPharmacy =
+    commandData?.counts?.pharmacy_cancellation_pending ?? stats?.pharmacy_cancellation_orders ?? 0;
+
   const cancelledPharmacy = pharmacyStats
     ? pharmacyStats.cancelled_orders
     : stats
-    ? stats.pharmacy_cancellation_orders ?? 0
-    : commandData?.counts
-    ? commandData.counts.pharmacy_cancellation_pending
+    ? stats.pharmacy_cancelled_orders ?? 0
     : null;
 
-  const cancellationPendingRestaurant = commandData?.counts?.restaurant_cancellation_pending ?? 0;
+  const cancellationPendingRestaurant =
+    stats?.restaurant_cancellation_orders ?? commandData?.counts?.restaurant_cancellation_pending ?? 0;
 
+  // Strict: Only count pending cancellation decisions awaiting administrative resolution
   const totalCancellationAttention =
     cancellationPendingDelivery !== null ||
-    cancelledDelivery !== null ||
-    cancelledPharmacy !== null ||
+    cancellationPendingPharmacy > 0 ||
     cancellationPendingRestaurant > 0
       ? (cancellationPendingDelivery ?? 0) +
-        (cancelledDelivery ?? 0) +
-        (cancelledPharmacy ?? 0) +
+        (cancellationPendingPharmacy ?? 0) +
         (cancellationPendingRestaurant ?? 0)
       : null;
 
@@ -1040,7 +1103,8 @@ export const AdminOverview: React.FC = () => {
     ? commandData.counts.pharmacy_assigned_active
     : null;
 
-  const assignedRestaurantOrders = commandData?.counts?.restaurant_assigned_active ?? 0;
+  const assignedRestaurantOrders =
+    stats?.restaurant_assigned_orders ?? commandData?.counts?.restaurant_assigned_active ?? 0;
 
   const totalAssignedOrders = commandData
     ? assignedOrdersList.length
@@ -1062,7 +1126,8 @@ export const AdminOverview: React.FC = () => {
     ? commandData.counts.pharmacy_completed
     : null;
 
-  const completedRestaurantOrders = commandData?.counts?.restaurant_completed ?? 0;
+  const completedRestaurantOrders =
+    stats?.restaurant_completed_orders ?? commandData?.counts?.restaurant_completed ?? 0;
 
   const totalCompletedOrders =
     completedDeliveryOrders !== null || completedPharmacyOrders !== null || completedRestaurantOrders > 0
@@ -1281,14 +1346,14 @@ export const AdminOverview: React.FC = () => {
         )}
 
         {/* Explicit Error Banner if DB connection or query failed */}
-        {(statsError || commandError || pharmacyError) && (
+        {(statsError || commandError || pharmacyError || restaurantStatsError) && (
           <div className="p-3.5 rounded-2xl bg-rose-950/40 border border-rose-500/30 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
             <div className="flex items-center gap-2.5 text-xs text-rose-200">
               <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0" />
               <div>
                 <span className="font-black block">تنبيه اتصال بقاعدة البيانات:</span>
                 <span className="text-rose-300/90">
-                  {statsError || commandError || pharmacyError}
+                  {statsError || commandError || pharmacyError || restaurantStatsError}
                 </span>
               </div>
             </div>
@@ -1445,7 +1510,7 @@ export const AdminOverview: React.FC = () => {
                 }
                 className="px-2 py-2 rounded-xl bg-rose-950/30 hover:bg-rose-500/20 border border-rose-500/30 text-right transition-colors cursor-pointer"
               >
-                <span className="text-[10px] text-rose-300 block truncate">بانتظار القرار</span>
+                <span className="text-[10px] text-rose-300 block truncate">قرار دليفري</span>
                 <span className="text-xs font-black font-mono text-rose-200">
                   {isStatsLoading && isCommandLoading
                     ? '...'
@@ -1455,23 +1520,15 @@ export const AdminOverview: React.FC = () => {
 
               <button
                 type="button"
-                onClick={() => navigateToSection('delivery_orders', { statusTab: 'cancelled' })}
-                className="px-2 py-2 rounded-xl bg-slate-950 hover:bg-slate-800 border border-slate-800 text-right transition-colors cursor-pointer"
+                onClick={() => {
+                  setActiveQueueTab('cancellations');
+                  setCancellationSourceFilter('pharmacy');
+                }}
+                className="px-2 py-2 rounded-xl bg-rose-950/30 hover:bg-rose-500/20 border border-rose-500/30 text-right transition-colors cursor-pointer"
               >
-                <span className="text-[10px] text-slate-400 block truncate">ملغي دليفري</span>
-                <span className="text-xs font-black font-mono text-slate-200">
-                  {isStatsLoading ? '...' : (cancelledDelivery ?? '—')}
-                </span>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => navigateToSection('pharmacy_orders', { status: 'cancelled' })}
-                className="px-2 py-2 rounded-xl bg-slate-950 hover:bg-slate-800 border border-slate-800 text-right transition-colors cursor-pointer"
-              >
-                <span className="text-[10px] text-slate-400 block truncate">ملغي صيدلية</span>
-                <span className="text-xs font-black font-mono text-slate-200">
-                  {isStatsLoading && isPharmacyLoading ? '...' : (cancelledPharmacy ?? '—')}
+                <span className="text-[10px] text-rose-300 block truncate">قرار صيدلية</span>
+                <span className="text-xs font-black font-mono text-rose-200">
+                  {isCommandLoading ? '...' : (cancellationPendingPharmacy ?? '—')}
                 </span>
               </button>
 
@@ -1483,9 +1540,22 @@ export const AdminOverview: React.FC = () => {
                 }}
                 className="px-2 py-2 rounded-xl bg-rose-950/30 hover:bg-rose-500/20 border border-rose-500/30 text-right transition-colors cursor-pointer"
               >
-                <span className="text-[10px] text-rose-300 block truncate">إلغاء مطاعم</span>
+                <span className="text-[10px] text-rose-300 block truncate">قرار مطاعم</span>
                 <span className="text-xs font-black font-mono text-rose-200">
                   {isCommandLoading ? '...' : (cancellationPendingRestaurant ?? '—')}
+                </span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => navigateToSection('delivery_orders', { statusTab: 'cancelled' })}
+                className="px-2 py-2 rounded-xl bg-slate-950 hover:bg-slate-800 border border-slate-800 text-right transition-colors cursor-pointer"
+              >
+                <span className="text-[10px] text-slate-400 block truncate">ملغاة سابقة</span>
+                <span className="text-xs font-black font-mono text-slate-300">
+                  {isStatsLoading
+                    ? '...'
+                    : ((cancelledDelivery ?? 0) + (cancelledPharmacy ?? 0) + (stats?.restaurant_cancelled_orders ?? 0))}
                 </span>
               </button>
             </div>
@@ -2529,28 +2599,41 @@ export const AdminOverview: React.FC = () => {
         {/* TAB 2: الطلبات قيد المراجعة */}
         {activeQueueTab === 'pending_review' && (
           <div className="space-y-3">
-            {/* Source Filter Tabs */}
-            <div className="flex items-center gap-1.5 overflow-x-auto pb-1 text-xs font-bold">
-              <span className="text-[11px] text-slate-400 ml-1 shrink-0">تصفية حسب المصدر:</span>
-              {[
-                { id: 'all', label: 'الكل' },
-                { id: 'delivery', label: 'دليفري' },
-                { id: 'pharmacy', label: 'صيدلية' },
-                { id: 'restaurant', label: 'مطاعم' },
-              ].map((sf) => (
-                <button
-                  key={sf.id}
-                  type="button"
-                  onClick={() => setPendingSourceFilter(sf.id as any)}
-                  className={`px-3 py-1 rounded-xl transition-all cursor-pointer text-xs ${
-                    pendingSourceFilter === sf.id
-                      ? 'bg-amber-500 text-slate-950 font-black'
-                      : 'bg-slate-950 text-slate-400 hover:text-white border border-slate-800'
-                  }`}
-                >
-                  {sf.label}
-                </button>
-              ))}
+            {/* Source Filter Tabs & Search Bar */}
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div className="flex items-center gap-1.5 overflow-x-auto pb-1 text-xs font-bold">
+                <span className="text-[11px] text-slate-400 ml-1 shrink-0">تصفية حسب المصدر:</span>
+                {[
+                  { id: 'all', label: 'الكل' },
+                  { id: 'delivery', label: 'دليفري' },
+                  { id: 'pharmacy', label: 'صيدلية' },
+                  { id: 'restaurant', label: 'مطاعم' },
+                ].map((sf) => (
+                  <button
+                    key={sf.id}
+                    type="button"
+                    onClick={() => setPendingSourceFilter(sf.id as any)}
+                    className={`px-3 py-1 rounded-xl transition-all cursor-pointer text-xs ${
+                      pendingSourceFilter === sf.id
+                        ? 'bg-amber-500 text-slate-950 font-black'
+                        : 'bg-slate-950 text-slate-400 hover:text-white border border-slate-800'
+                    }`}
+                  >
+                    {sf.label}
+                  </button>
+                ))}
+              </div>
+
+              <div className="relative min-w-[200px] sm:max-w-xs">
+                <Search className="w-3.5 h-3.5 absolute right-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                <input
+                  type="text"
+                  value={pendingSearch}
+                  onChange={(e) => setPendingSearch(e.target.value)}
+                  placeholder="بحث برقم الطلب، العميل، المطعم..."
+                  className="w-full pl-3 pr-8 py-1.5 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white placeholder-slate-500 focus:outline-none focus:border-amber-500"
+                />
+              </div>
             </div>
 
             {isCommandLoading ? (
@@ -2701,28 +2784,41 @@ export const AdminOverview: React.FC = () => {
         {/* TAB 3: طلبات الإلغاء */}
         {activeQueueTab === 'cancellations' && (
           <div className="space-y-3">
-            {/* Source Filter Tabs */}
-            <div className="flex items-center gap-1.5 overflow-x-auto pb-1 text-xs font-bold">
-              <span className="text-[11px] text-slate-400 ml-1 shrink-0">تصفية حسب المصدر:</span>
-              {[
-                { id: 'all', label: 'الكل' },
-                { id: 'delivery', label: 'دليفري' },
-                { id: 'pharmacy', label: 'صيدلية' },
-                { id: 'restaurant', label: 'مطاعم' },
-              ].map((sf) => (
-                <button
-                  key={sf.id}
-                  type="button"
-                  onClick={() => setCancellationSourceFilter(sf.id as any)}
-                  className={`px-3 py-1 rounded-xl transition-all cursor-pointer text-xs ${
-                    cancellationSourceFilter === sf.id
-                      ? 'bg-rose-500 text-white font-black'
-                      : 'bg-slate-950 text-slate-400 hover:text-white border border-slate-800'
-                  }`}
-                >
-                  {sf.label}
-                </button>
-              ))}
+            {/* Source Filter Tabs & Search Bar */}
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div className="flex items-center gap-1.5 overflow-x-auto pb-1 text-xs font-bold">
+                <span className="text-[11px] text-slate-400 ml-1 shrink-0">تصفية حسب المصدر:</span>
+                {[
+                  { id: 'all', label: 'الكل' },
+                  { id: 'delivery', label: 'دليفري' },
+                  { id: 'pharmacy', label: 'صيدلية' },
+                  { id: 'restaurant', label: 'مطاعم' },
+                ].map((sf) => (
+                  <button
+                    key={sf.id}
+                    type="button"
+                    onClick={() => setCancellationSourceFilter(sf.id as any)}
+                    className={`px-3 py-1 rounded-xl transition-all cursor-pointer text-xs ${
+                      cancellationSourceFilter === sf.id
+                        ? 'bg-rose-500 text-white font-black'
+                        : 'bg-slate-950 text-slate-400 hover:text-white border border-slate-800'
+                    }`}
+                  >
+                    {sf.label}
+                  </button>
+                ))}
+              </div>
+
+              <div className="relative min-w-[200px] sm:max-w-xs">
+                <Search className="w-3.5 h-3.5 absolute right-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                <input
+                  type="text"
+                  value={cancellationSearch}
+                  onChange={(e) => setCancellationSearch(e.target.value)}
+                  placeholder="بحث برقم الطلب، العميل، السائق، السبب..."
+                  className="w-full pl-3 pr-8 py-1.5 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white placeholder-slate-500 focus:outline-none focus:border-rose-500"
+                />
+              </div>
             </div>
 
             {isCommandLoading ? (

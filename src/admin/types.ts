@@ -374,10 +374,20 @@ export interface AdminOverviewStats {
   pharmacy_active_orders?: number;
   pharmacy_assigned_orders?: number;
   pharmacy_cancellation_orders?: number;
+  pharmacy_cancelled_orders?: number;
   pharmacy_completed_orders?: number;
   pharmacy_total_pharmacies?: number;
   pharmacy_active_areas?: number;
   active_notifications_count?: number;
+  restaurant_total_orders?: number;
+  restaurant_pending_orders?: number;
+  restaurant_active_orders?: number;
+  restaurant_assigned_orders?: number;
+  restaurant_cancellation_orders?: number;
+  restaurant_completed_orders?: number;
+  restaurant_cancelled_orders?: number;
+  restaurant_total_restaurants?: number;
+  restaurant_active_restaurants?: number;
 }
 
 export interface AdminInvoiceRecord {

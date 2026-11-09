@@ -174,7 +174,7 @@ export const adminService = {
     if (!supabase) return null;
 
     try {
-      // Fetch auxiliary live counts for Delivery Management, Admin Team, Central Catalog & Notifications in parallel
+      // Fetch auxiliary live counts for Delivery Management, Restaurant, Admin Team, Central Catalog & Notifications in parallel
       const [
         rpcResult,
         deliveryOrdersRes,
@@ -187,22 +187,28 @@ export const adminService = {
         pharmacyDeliveryOrdersRes,
         pharmacyPharmaciesRes,
         pharmacyAreasRes,
+        restaurantOrdersRes,
+        restaurantDeliveryOrdersRes,
+        restaurantsRes,
         profilesRes,
       ] = await Promise.all([
         supabase.rpc('admin_get_overview_stats', {
           p_start_date: startDate || null,
           p_end_date: endDate || null,
         }),
-        supabase.from('delivery_orders').select('id, status, customer_phone, household_id, assigned_driver_id'),
+        supabase.from('delivery_orders').select('id, status, customer_phone, household_id, assigned_driver_id, created_at'),
         supabase.from('delivery_drivers').select('id, is_active, status'),
         supabase.from('admin_users').select('*', { count: 'exact', head: true }).eq('is_active', true),
         supabase.from('global_products').select('*', { count: 'exact', head: true }),
         supabase.from('global_categories').select('*', { count: 'exact', head: true }),
         supabase.from('admin_notifications').select('id, is_active'),
-        supabase.from('pharmacy_orders').select('id, status'),
+        supabase.from('pharmacy_orders').select('id, status, created_at'),
         supabase.from('pharmacy_delivery_orders').select('id, pharmacy_order_id, assigned_driver_id, cancellation_requested_at, cancellation_decision'),
         supabase.from('pharmacy_pharmacies').select('id, is_active'),
         supabase.from('pharmacy_delivery_area_settings').select('id, service_enabled'),
+        supabase.from('restaurant_orders').select('id, status, customer_total, delivery_fee, fulfillment_route, created_at'),
+        supabase.from('restaurant_delivery_orders').select('id, order_id, driver_user_id, status'),
+        supabase.from('restaurants').select('id, is_active'),
         supabase.from('profiles').select('id, is_blocked, status'),
       ]);
 
@@ -215,6 +221,7 @@ export const adminService = {
         (o: any) => o.status === 'pending' || o.status === 'pending_review' || o.status === 'new'
       ).length;
       const pharmacyCompletedOrders = pOrders.filter((o: any) => o.status === 'completed').length;
+      const pharmacyCancelledOrders = pOrders.filter((o: any) => o.status === 'cancelled').length;
       const pharmacyActiveOrders = pOrders.filter(
         (o: any) => o.status !== 'completed' && o.status !== 'cancelled'
       ).length;
@@ -238,6 +245,57 @@ export const adminService = {
       const pharmacyTotalPharmacies = pPharmacies.length;
       const pharmacyActiveAreas = pAreas.filter((a: any) => Boolean(a.service_enabled)).length;
 
+      // Restaurant Domain Aggregation
+      const rOrders = (restaurantOrdersRes?.data || []) as any[];
+      const rDeliveryOrders = (restaurantDeliveryOrdersRes?.data || []) as any[];
+      const restaurantsList = (restaurantsRes?.data || []) as any[];
+
+      const restaurantTotalOrders = rOrders.length;
+      let restaurantPendingOrders = 0;
+      let restaurantActiveOrders = 0;
+      let restaurantCompletedOrders = 0;
+      let restaurantCancelledOrders = 0;
+      let restaurantCancellationOrders = 0;
+
+      rOrders.forEach((o: any) => {
+        const st = (o.status || '').toLowerCase();
+        if (st === 'completed' || st === 'delivered') {
+          restaurantCompletedOrders++;
+        } else if (st === 'cancelled' || st === 'rejected') {
+          restaurantCancelledOrders++;
+        } else if (st === 'cancellation_pending') {
+          restaurantCancellationOrders++;
+          restaurantActiveOrders++;
+        } else if (st === 'pending' || st === 'new' || st === 'pending_review') {
+          restaurantPendingOrders++;
+          restaurantActiveOrders++;
+        } else {
+          restaurantActiveOrders++;
+        }
+      });
+
+      const assignedRestaurantOrderIds = new Set<string>();
+      rDeliveryOrders.forEach((d: any) => {
+        if (d.driver_user_id) {
+          const ro = rOrders.find((r: any) => r.id === d.order_id);
+          const rst = (ro?.status || '').toLowerCase();
+          const dst = (d.status || '').toLowerCase();
+          if (
+            rst !== 'completed' &&
+            rst !== 'delivered' &&
+            rst !== 'cancelled' &&
+            rst !== 'rejected' &&
+            dst !== 'delivered' &&
+            dst !== 'cancelled'
+          ) {
+            assignedRestaurantOrderIds.add(d.order_id);
+          }
+        }
+      });
+      const restaurantAssignedOrders = assignedRestaurantOrderIds.size;
+      const restaurantTotalRestaurants = restaurantsList.length;
+      const restaurantActiveRestaurants = restaurantsList.filter((r: any) => Boolean(r.is_active)).length;
+
       const dOrders = deliveryOrdersRes.data || [];
       const dDrivers = deliveryDriversRes.data || [];
       const customerSet = new Set<string>();
@@ -248,12 +306,13 @@ export const adminService = {
 
       const deliveryTotalOrders = dOrders.length;
       const deliveryPendingReviewOrders = dOrders.filter((o: any) => o.status === 'pending_review').length;
+      // Strictly assigned to a driver and active
       const deliveryAssignedOrders = dOrders.filter(
         (o: any) =>
-          o.status === 'accepted' ||
-          o.status === 'shopping' ||
-          o.status === 'shopping_completed' ||
-          (Boolean(o.assigned_driver_id) && o.status !== 'completed' && o.status !== 'cancelled')
+          Boolean(o.assigned_driver_id) &&
+          o.status !== 'completed' &&
+          o.status !== 'cancelled' &&
+          o.status !== 'pending_review'
       ).length;
       const deliveryCancellationOrders = dOrders.filter((o: any) => o.status === 'cancellation_pending').length;
       const deliveryActiveOrders = dOrders.filter(
@@ -314,13 +373,31 @@ export const adminService = {
           pharmacy_active_orders: pharmacyActiveOrders,
           pharmacy_assigned_orders: pharmacyAssignedOrders,
           pharmacy_cancellation_orders: pharmacyCancellationOrders,
+          pharmacy_cancelled_orders: pharmacyCancelledOrders,
           pharmacy_completed_orders: pharmacyCompletedOrders,
           pharmacy_total_pharmacies: pharmacyTotalPharmacies,
           pharmacy_active_areas: pharmacyActiveAreas,
+          restaurant_total_orders: restaurantTotalOrders,
+          restaurant_pending_orders: restaurantPendingOrders,
+          restaurant_active_orders: restaurantActiveOrders,
+          restaurant_assigned_orders: restaurantAssignedOrders,
+          restaurant_cancellation_orders: restaurantCancellationOrders,
+          restaurant_completed_orders: restaurantCompletedOrders,
+          restaurant_cancelled_orders: restaurantCancelledOrders,
+          restaurant_total_restaurants: restaurantTotalRestaurants,
+          restaurant_active_restaurants: restaurantActiveRestaurants,
         };
       }
 
       // 2. Direct aggregation fallback from database
+      let invoicesQuery = supabase.from('invoices').select('total_price, created_at, date');
+      if (startDate) {
+        invoicesQuery = invoicesQuery.gte('created_at', startDate);
+      }
+      if (endDate) {
+        invoicesQuery = invoicesQuery.lte('created_at', endDate);
+      }
+
       const [
         { count: totalHouseholds },
         { count: totalMissingItems },
@@ -328,7 +405,7 @@ export const adminService = {
       ] = await Promise.all([
         supabase.from('households').select('*', { count: 'exact', head: true }),
         supabase.from('missing_items').select('*', { count: 'exact', head: true }),
-        supabase.from('invoices').select('total_price'),
+        invoicesQuery,
       ]);
 
       const sumInvoices = (invoicesData || []).reduce((acc: number, cur: any) => acc + (Number(cur.total_price) || 0), 0);
@@ -367,9 +444,19 @@ export const adminService = {
         pharmacy_active_orders: pharmacyActiveOrders,
         pharmacy_assigned_orders: pharmacyAssignedOrders,
         pharmacy_cancellation_orders: pharmacyCancellationOrders,
+        pharmacy_cancelled_orders: pharmacyCancelledOrders,
         pharmacy_completed_orders: pharmacyCompletedOrders,
         pharmacy_total_pharmacies: pharmacyTotalPharmacies,
         pharmacy_active_areas: pharmacyActiveAreas,
+        restaurant_total_orders: restaurantTotalOrders,
+        restaurant_pending_orders: restaurantPendingOrders,
+        restaurant_active_orders: restaurantActiveOrders,
+        restaurant_assigned_orders: restaurantAssignedOrders,
+        restaurant_cancellation_orders: restaurantCancellationOrders,
+        restaurant_completed_orders: restaurantCompletedOrders,
+        restaurant_cancelled_orders: restaurantCancelledOrders,
+        restaurant_total_restaurants: restaurantTotalRestaurants,
+        restaurant_active_restaurants: restaurantActiveRestaurants,
       };
     } catch (err) {
       console.warn('Error fetching overview stats:', err);
@@ -540,11 +627,11 @@ export const adminService = {
         }
       }
 
-      // Restaurant active orders requiring operational tracking (Excluding terminal: delivered, cancelled, rejected)
-      const restaurantTerminalStatuses = new Set(['delivered', 'cancelled', 'rejected']);
+      // Restaurant orders strictly awaiting initial review/acceptance (Excluding accepted, cooking, delivering, or terminal)
       for (const ro of rOrders) {
         const s = (ro.status || '').toLowerCase();
-        if (!restaurantTerminalStatuses.has(s)) {
+        const isPendingReview = s === 'pending' || s === 'new' || s === 'pending_review';
+        if (isPendingReview) {
           restaurantPendingCount++;
           pendingReviewOrders.push({
             id: ro.id,
@@ -554,7 +641,7 @@ export const adminService = {
             customer_name: ro.customer_name || 'عميل مطعم',
             customer_phone: ro.customer_phone || null,
             governorate_name: ro.delivery_governorate_name_snapshot || null,
-            status: ro.status,
+            status: ro.status || 'pending',
             total_amount:
               ro.customer_total !== null && ro.customer_total !== undefined
                 ? Number(ro.customer_total)
@@ -680,6 +767,7 @@ export const adminService = {
       // 3. Assigned Orders with Driver Name (Active) & Recent Completed Orders
       const assignedOrdersWithDrivers: OperationalAssignedOrderSummary[] = [];
       const recentCompletedOrders: OperationalAssignedOrderSummary[] = [];
+      const handledCompletedOrderIds = new Set<string>();
       let deliveryAssignedCount = 0;
       let pharmacyAssignedCount = 0;
       let restaurantAssignedCount = 0;
@@ -689,28 +777,30 @@ export const adminService = {
 
       for (const o of dOrders) {
         const drv = o.assigned_driver_id ? driversById.get(o.assigned_driver_id) : null;
-        const driverName = drv?.full_name || (o.assigned_driver_id ? 'مندوب معين' : 'غير مسند');
+        const driverName = drv?.full_name || 'مندوب دليفري';
 
         if (o.status === 'completed') {
-          deliveryCompletedCount++;
-          recentCompletedOrders.push({
-            id: o.id,
-            order_number: o.order_number || `#${String(o.id).slice(0, 6)}`,
-            source: 'delivery',
-            customer_name: o.customer_name || o.household_name || 'عميل دليفري',
-            governorate_name: o.governorate_name || null,
-            status: o.status,
-            driver_id: o.assigned_driver_id || '',
-            driver_name: driverName,
-            driver_phone: drv?.phone || null,
-            total_amount: o.total_amount !== null && o.total_amount !== undefined ? Number(o.total_amount) : null,
-            updated_at: o.updated_at || o.created_at,
-          });
+          if (!handledCompletedOrderIds.has(o.id)) {
+            handledCompletedOrderIds.add(o.id);
+            deliveryCompletedCount++;
+            recentCompletedOrders.push({
+              id: o.id,
+              order_number: o.order_number || `#${String(o.id).slice(0, 6)}`,
+              source: 'delivery',
+              customer_name: o.customer_name || o.household_name || 'عميل دليفري',
+              governorate_name: o.governorate_name || null,
+              status: o.status,
+              driver_id: o.assigned_driver_id || '',
+              driver_name: driverName,
+              driver_phone: drv?.phone || null,
+              total_amount: o.total_amount !== null && o.total_amount !== undefined ? Number(o.total_amount) : null,
+              updated_at: o.updated_at || o.created_at,
+            });
+          }
         } else if (
-          o.status === 'accepted' ||
-          o.status === 'shopping' ||
-          o.status === 'shopping_completed' ||
-          (Boolean(o.assigned_driver_id) && o.status !== 'cancelled' && o.status !== 'pending_review')
+          Boolean(o.assigned_driver_id) &&
+          o.status !== 'cancelled' &&
+          o.status !== 'pending_review'
         ) {
           deliveryAssignedCount++;
           assignedOrdersWithDrivers.push({
@@ -720,7 +810,7 @@ export const adminService = {
             customer_name: o.customer_name || o.household_name || 'عميل دليفري',
             governorate_name: o.governorate_name || null,
             status: o.status,
-            driver_id: o.assigned_driver_id || '',
+            driver_id: o.assigned_driver_id,
             driver_name: driverName,
             driver_phone: drv?.phone || null,
             total_amount: o.total_amount !== null && o.total_amount !== undefined ? Number(o.total_amount) : null,
@@ -735,30 +825,34 @@ export const adminService = {
         const prof = po.user_id ? profilesById.get(po.user_id) : null;
         const customerName =
           prof?.full_name || po.prescription_title || po.requested_pharmacy_name || 'طلب صيدلية';
-        const driverName = drv?.full_name || (pdo?.assigned_driver_id ? 'مندوب صيدلية' : 'غير مسند');
+        const driverName = drv?.full_name || 'مندوب صيدلية';
 
         if (po.status === 'completed') {
-          pharmacyCompletedCount++;
-          recentCompletedOrders.push({
-            id: po.id,
-            order_number: po.order_number || `#${String(po.id).slice(0, 6)}`,
-            source: 'pharmacy',
-            customer_name: customerName,
-            governorate_name: po.address_governorate_name || null,
-            status: po.status,
-            driver_id: pdo?.assigned_driver_id || '',
-            driver_name: driverName,
-            driver_phone: drv?.phone || null,
-            total_amount:
-              po.grand_total !== null && po.grand_total !== undefined
-                ? Number(po.grand_total)
-                : Number(po.delivery_fee || 0),
-            updated_at: po.updated_at || po.created_at,
-          });
+          if (!handledCompletedOrderIds.has(po.id)) {
+            handledCompletedOrderIds.add(po.id);
+            pharmacyCompletedCount++;
+            recentCompletedOrders.push({
+              id: po.id,
+              order_number: po.order_number || `#${String(po.id).slice(0, 6)}`,
+              source: 'pharmacy',
+              customer_name: customerName,
+              governorate_name: po.address_governorate_name || null,
+              status: po.status,
+              driver_id: pdo?.assigned_driver_id || '',
+              driver_name: driverName,
+              driver_phone: drv?.phone || null,
+              total_amount:
+                po.grand_total !== null && po.grand_total !== undefined
+                  ? Number(po.grand_total)
+                  : Number(po.delivery_fee || 0),
+              updated_at: po.updated_at || po.created_at,
+            });
+          }
         } else if (
           Boolean(pdo?.assigned_driver_id) &&
           po.status !== 'cancelled' &&
-          po.status !== 'completed'
+          po.status !== 'completed' &&
+          po.status !== 'pending_review'
         ) {
           pharmacyAssignedCount++;
           assignedOrdersWithDrivers.push({
@@ -780,8 +874,13 @@ export const adminService = {
         }
       }
 
-      // Restaurant orders assigned to platform drivers from restaurant_delivery_orders
+      // Restaurant orders assigned to platform drivers from restaurant_delivery_orders with strict deduplication
+      const handledRestaurantAssignedOrderIds = new Set<string>();
       for (const rdo of rDeliveryOrders) {
+        if (handledRestaurantAssignedOrderIds.has(rdo.order_id)) {
+          continue;
+        }
+
         const ro = rOrdersById.get(rdo.order_id);
 
         // Strict: Do NOT include restaurant self-delivery (fulfillment_route === 'restaurant_delivery')
@@ -794,37 +893,42 @@ export const adminService = {
           continue; // Only orders actually assigned to a driver
         }
 
+        handledRestaurantAssignedOrderIds.add(rdo.order_id);
+
         const drv = driversByUserId.get(driverId) || driversById.get(driverId);
         const prof = profilesById.get(driverId);
         const driverName = drv?.full_name || prof?.full_name || 'مندوب مطاعم';
         const driverPhone = drv?.phone || prof?.phone || null;
 
         const currentDeliveryStatus = (rdo.status || ro?.status || '').toLowerCase();
-        const isOrderDelivered = currentDeliveryStatus === 'delivered' || (ro?.status || '').toLowerCase() === 'delivered';
+        const isOrderDelivered = currentDeliveryStatus === 'delivered' || (ro?.status || '').toLowerCase() === 'delivered' || (ro?.status || '').toLowerCase() === 'completed';
         const isOrderCancelled = currentDeliveryStatus === 'cancelled' || (ro?.status || '').toLowerCase() === 'cancelled';
         const isOrderRejected = (ro?.status || '').toLowerCase() === 'rejected';
 
         if (isOrderDelivered) {
-          restaurantCompletedCount++;
-          recentCompletedOrders.push({
-            id: ro?.id || rdo.order_id,
-            order_number: ro?.order_number || `#${String(rdo.order_id).slice(0, 6)}`,
-            source: 'restaurant',
-            restaurant_name: ro?.restaurant_name_snapshot || 'مطعم',
-            customer_name: ro?.customer_name || 'عميل مطعم',
-            customer_phone: ro?.customer_phone || null,
-            delivery_address: ro?.delivery_address || null,
-            governorate_name: ro?.delivery_governorate_name_snapshot || null,
-            status: rdo.status || ro?.status || 'delivered',
-            driver_id: driverId,
-            driver_name: driverName,
-            driver_phone: driverPhone,
-            total_amount:
-              ro?.customer_total !== null && ro?.customer_total !== undefined
-                ? Number(ro.customer_total)
-                : null,
-            updated_at: rdo.updated_at || rdo.delivered_at || ro?.updated_at || ro?.created_at || new Date().toISOString(),
-          });
+          if (!handledCompletedOrderIds.has(ro?.id || rdo.order_id)) {
+            handledCompletedOrderIds.add(ro?.id || rdo.order_id);
+            restaurantCompletedCount++;
+            recentCompletedOrders.push({
+              id: ro?.id || rdo.order_id,
+              order_number: ro?.order_number || `#${String(rdo.order_id).slice(0, 6)}`,
+              source: 'restaurant',
+              restaurant_name: ro?.restaurant_name_snapshot || 'مطعم',
+              customer_name: ro?.customer_name || 'عميل مطعم',
+              customer_phone: ro?.customer_phone || null,
+              delivery_address: ro?.delivery_address || null,
+              governorate_name: ro?.delivery_governorate_name_snapshot || null,
+              status: rdo.status || ro?.status || 'delivered',
+              driver_id: driverId,
+              driver_name: driverName,
+              driver_phone: driverPhone,
+              total_amount:
+                ro?.customer_total !== null && ro?.customer_total !== undefined
+                  ? Number(ro.customer_total)
+                  : null,
+              updated_at: rdo.updated_at || rdo.delivered_at || ro?.updated_at || ro?.created_at || new Date().toISOString(),
+            });
+          }
         } else if (!isOrderCancelled && !isOrderRejected) {
           restaurantAssignedCount++;
           assignedOrdersWithDrivers.push({
