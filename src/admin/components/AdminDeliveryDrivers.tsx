@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useAdmin } from '../context/AdminContext';
 import { adminService, resolveDocumentSrc, isDirectDocumentSrc } from '../services/adminService';
+import { supabase } from '../../lib/supabase';
 import {
   DeliveryDriver,
   DeliveryDriverStatsSummary,
@@ -401,6 +402,61 @@ export const AdminDeliveryDrivers: React.FC = () => {
 
   useEffect(() => {
     loadDrivers();
+  }, [loadDrivers]);
+
+  // Realtime subscription and 30-second fallback polling for live driver changes
+  useEffect(() => {
+    if (!supabase) return;
+
+    // 1. Fallback Periodic Polling (every 30 seconds)
+    const pollInterval = setInterval(() => {
+      loadDrivers();
+    }, 30000);
+
+    // 2. Realtime Subscriptions with Debounce
+    let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+    const handleRealtimeDriverChange = () => {
+      if (debounceTimer) clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(() => {
+        loadDrivers();
+      }, 1000);
+    };
+
+    const channel = supabase
+      .channel('delivery-drivers-management-realtime')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'delivery_drivers' },
+        handleRealtimeDriverChange
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'delivery_orders' },
+        handleRealtimeDriverChange
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'pharmacy_delivery_orders' },
+        handleRealtimeDriverChange
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'restaurant_delivery_orders' },
+        handleRealtimeDriverChange
+      )
+      .subscribe((status, err) => {
+        if (status === 'SUBSCRIBED') {
+          // Connected successfully
+        } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
+          console.warn('Driver management realtime notice (falling back to polling):', status, err);
+        }
+      });
+
+    return () => {
+      clearInterval(pollInterval);
+      if (debounceTimer) clearTimeout(debounceTimer);
+      supabase.removeChannel(channel);
+    };
   }, [loadDrivers]);
 
   // Derived Governorates

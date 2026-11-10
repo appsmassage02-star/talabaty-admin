@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { useAdmin } from '../context/AdminContext';
 import { restaurantAdminService } from '../services/restaurantAdminService';
+import { adminService } from '../services/adminService';
 import { RestaurantImageUploader } from './RestaurantImageUploader';
 import { RestaurantLocationPickerModal } from './RestaurantLocationPickerModal';
 import { resolveRestaurantImageSrc } from '../services/restaurantImageService';
@@ -1297,11 +1298,32 @@ export const AdminRestaurantManagement: React.FC = () => {
 
     try {
       const areaId = activeOrderDetails.delivery_area_id || undefined;
-      const res = await restaurantAdminService.listReassignableDrivers(areaId);
+      const [res, availableDriversList] = await Promise.all([
+        restaurantAdminService.listReassignableDrivers(areaId),
+        adminService.getAvailableDeliveryDriversForAssign(activeOrderDetails.assigned_driver_id || undefined),
+      ]);
+
       if (res.error) {
         showToast(res.error, 'error');
       }
-      setReassignableDrivers(res.drivers || []);
+
+      const rpcDrivers = res.drivers || [];
+      const availableMap = new Map<string, any>();
+      availableDriversList.forEach((d) => {
+        availableMap.set(d.id, d);
+        if (d.user_id) availableMap.set(d.user_id, d);
+      });
+
+      // Filter: Only include drivers who are confirmed available in live evaluation (or currently assigned driver)
+      const verifiedDrivers = rpcDrivers.filter((rd: any) => {
+        const match =
+          availableMap.get(rd.id) ||
+          availableMap.get(rd.driver_id) ||
+          availableMap.get(rd.driver_user_id);
+        return Boolean(match);
+      });
+
+      setReassignableDrivers(verifiedDrivers);
     } catch (err: any) {
       showToast(err?.message || 'حدث خطأ أثناء تحميل قائمة المناديب', 'error');
     } finally {

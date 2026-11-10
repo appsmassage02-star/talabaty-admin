@@ -526,53 +526,101 @@ export const adminService = {
 
       // ----------------------------------------------------------------------
       // Driver Activity & Real-Time Availability (Current Live Snapshot)
-      // Note: Current availability & account status are live snapshots and do not depend on order date filter.
+      // CRITICAL: Live driver availability and active orders detection MUST NOT
+      // be constrained by the historical overview date filter.
       // ----------------------------------------------------------------------
       const busyDriverIds = new Set<string>();
+      let liveAssignedActiveOrdersCount = 0;
 
-      // Active home delivery orders
-      dOrders.forEach((o: any) => {
-        if (
-          o.assigned_driver_id &&
-          (o.status === 'accepted' || o.status === 'shopping' || o.status === 'shopping_completed')
-        ) {
-          busyDriverIds.add(String(o.assigned_driver_id));
-        }
-      });
+      try {
+        // Query current live in-progress orders across ALL THREE sectors without date filters
+        const [liveDelivRes, livePharmDeliveryRes, livePharmOrdersRes, liveRestDeliveryRes, liveRestOrdersRes] =
+          await Promise.all([
+            supabase
+              .from('delivery_orders')
+              .select('id, assigned_driver_id, status')
+              .in('status', ['accepted', 'shopping', 'shopping_completed']),
+            supabase
+              .from('pharmacy_delivery_orders')
+              .select('id, pharmacy_order_id, assigned_driver_id, status'),
+            supabase
+              .from('pharmacy_orders')
+              .select('id, status'),
+            supabase
+              .from('restaurant_delivery_orders')
+              .select('id, order_id, driver_user_id, status'),
+            supabase
+              .from('restaurant_orders')
+              .select('id, status, fulfillment_route'),
+          ]);
 
-      // Active pharmacy delivery orders
-      pDeliveryOrders.forEach((d: any) => {
-        const pOrder = pOrders.find((p: any) => p.id === d.pharmacy_order_id);
-        const st = (pOrder?.status || '').toLowerCase();
-        if (
-          d.assigned_driver_id &&
-          st !== 'completed' &&
-          st !== 'cancelled' &&
-          (d.status || '').toLowerCase() !== 'completed' &&
-          (d.status || '').toLowerCase() !== 'cancelled'
-        ) {
-          busyDriverIds.add(String(d.assigned_driver_id));
-        }
-      });
+        const assignedOrderKeys = new Set<string>();
 
-      // Active restaurant delivery orders
-      rDeliveryOrders.forEach((d: any) => {
-        const ro = rOrders.find((r: any) => r.id === d.order_id);
-        const rst = (ro?.status || '').toLowerCase();
-        const dst = (d.status || '').toLowerCase();
-        if (
-          d.driver_user_id &&
-          ro?.fulfillment_route !== 'restaurant_delivery' &&
-          rst !== 'completed' &&
-          rst !== 'delivered' &&
-          rst !== 'cancelled' &&
-          rst !== 'rejected' &&
-          dst !== 'delivered' &&
-          dst !== 'cancelled'
-        ) {
-          busyDriverIds.add(String(d.driver_user_id));
-        }
-      });
+        // 1. Live active home delivery orders
+        (liveDelivRes.data || []).forEach((o: any) => {
+          if (o.assigned_driver_id) {
+            busyDriverIds.add(String(o.assigned_driver_id));
+            const key = `deliv_${o.id}`;
+            if (!assignedOrderKeys.has(key)) {
+              assignedOrderKeys.add(key);
+              liveAssignedActiveOrdersCount++;
+            }
+          }
+        });
+
+        // 2. Live active pharmacy delivery orders
+        const livePharmMap = new Map<string, any>();
+        (livePharmOrdersRes.data || []).forEach((po: any) => livePharmMap.set(po.id, po));
+
+        (livePharmDeliveryRes.data || []).forEach((d: any) => {
+          const po = livePharmMap.get(d.pharmacy_order_id);
+          const pst = (po?.status || '').toLowerCase();
+          const dst = (d.status || '').toLowerCase();
+          const isFinished =
+            pst === 'completed' || pst === 'cancelled' || dst === 'completed' || dst === 'cancelled';
+
+          if (d.assigned_driver_id && !isFinished) {
+            busyDriverIds.add(String(d.assigned_driver_id));
+            const key = `pharm_${d.pharmacy_order_id || d.id}`;
+            if (!assignedOrderKeys.has(key)) {
+              assignedOrderKeys.add(key);
+              liveAssignedActiveOrdersCount++;
+            }
+          }
+        });
+
+        // 3. Live active restaurant delivery orders
+        const liveRestMap = new Map<string, any>();
+        (liveRestOrdersRes.data || []).forEach((ro: any) => liveRestMap.set(ro.id, ro));
+
+        (liveRestDeliveryRes.data || []).forEach((d: any) => {
+          const ro = liveRestMap.get(d.order_id);
+          const rst = (ro?.status || '').toLowerCase();
+          const dst = (d.status || '').toLowerCase();
+          const isFinished =
+            rst === 'completed' ||
+            rst === 'delivered' ||
+            rst === 'cancelled' ||
+            rst === 'rejected' ||
+            dst === 'delivered' ||
+            dst === 'cancelled';
+
+          if (
+            d.driver_user_id &&
+            ro?.fulfillment_route !== 'restaurant_delivery' &&
+            !isFinished
+          ) {
+            busyDriverIds.add(String(d.driver_user_id));
+            const key = `rest_${d.order_id || d.id}`;
+            if (!assignedOrderKeys.has(key)) {
+              assignedOrderKeys.add(key);
+              liveAssignedActiveOrdersCount++;
+            }
+          }
+        });
+      } catch (liveErr) {
+        console.warn('Could not query live active orders for driver availability:', liveErr);
+      }
 
       const dDrivers = deliveryDriversRes.data || [];
       const deliveryTotalDrivers = dDrivers.length;
@@ -637,7 +685,7 @@ export const adminService = {
           delivery_busy_now_drivers: deliveryBusyDrivers,
           delivery_inactive_now_drivers: deliveryInactiveNowDrivers,
           delivery_ineligible_drivers: deliveryIneligibleDrivers,
-          delivery_assigned_active_orders: busyDriverIds.size,
+          delivery_assigned_active_orders: liveAssignedActiveOrdersCount,
           delivery_inactive_drivers: deliveryInactiveDrivers,
           delivery_pending_drivers: deliveryPendingDrivers,
           delivery_total_customers: customerSet.size,
@@ -717,7 +765,7 @@ export const adminService = {
         delivery_busy_now_drivers: deliveryBusyDrivers,
         delivery_inactive_now_drivers: deliveryInactiveNowDrivers,
         delivery_ineligible_drivers: deliveryIneligibleDrivers,
-        delivery_assigned_active_orders: busyDriverIds.size,
+        delivery_assigned_active_orders: liveAssignedActiveOrdersCount,
         delivery_inactive_drivers: deliveryInactiveDrivers,
         delivery_pending_drivers: deliveryPendingDrivers,
         delivery_total_customers: customerSet.size,
@@ -3639,15 +3687,25 @@ export const adminService = {
       }
 
       // 3. Fetch active orders from ALL THREE DOMAINS to detect busy drivers
+      // Fetch and group active & completed assigned orders across ALL THREE SECTORS
       let ordersData: any[] = [];
       const busyDriverIds = new Set<string>();
+      const ordersByDriver: Record<string, { active: number; completed: number; cancelled: number; total: number }> = {};
+      let totalCompletedAll = 0;
+      let totalAssignedInProgressAll = 0;
+
+      // Track assigned order unique keys to prevent duplicate counting
+      const assignedInProgressKeys = new Set<string>();
 
       try {
-        const [delivOrdersRes, pharmDeliveryRes, restDeliveryRes, restOrdersRes] = await Promise.all([
+        const [delivOrdersRes, pharmDeliveryRes, pharmOrdersRes, restDeliveryRes, restOrdersRes] = await Promise.all([
           supabase.from('delivery_orders').select('id, assigned_driver_id, status'),
           supabase
             .from('pharmacy_delivery_orders')
             .select('id, pharmacy_order_id, assigned_driver_id, status'),
+          supabase
+            .from('pharmacy_orders')
+            .select('id, status'),
           supabase
             .from('restaurant_delivery_orders')
             .select('id, order_id, driver_user_id, status'),
@@ -3658,76 +3716,109 @@ export const adminService = {
 
         if (delivOrdersRes.data) ordersData = delivOrdersRes.data;
 
-        // Populate busyDriverIds from home delivery
+        // 1. Process home delivery orders
         for (const ord of ordersData) {
-          if (
-            ord.assigned_driver_id &&
-            ['accepted', 'shopping', 'shopping_completed'].includes(ord.status)
-          ) {
-            busyDriverIds.add(String(ord.assigned_driver_id));
+          if (!ord.assigned_driver_id) continue;
+          const drvId = String(ord.assigned_driver_id);
+          if (!ordersByDriver[drvId]) {
+            ordersByDriver[drvId] = { active: 0, completed: 0, cancelled: 0, total: 0 };
           }
-        }
+          ordersByDriver[drvId].total++;
 
-        // Populate busyDriverIds from pharmacy delivery orders
-        if (pharmDeliveryRes.data) {
-          for (const pdo of pharmDeliveryRes.data) {
-            const st = (pdo.status || '').toLowerCase();
-            if (pdo.assigned_driver_id && st !== 'completed' && st !== 'cancelled') {
-              busyDriverIds.add(String(pdo.assigned_driver_id));
+          if (ord.status === 'completed') {
+            ordersByDriver[drvId].completed++;
+            totalCompletedAll++;
+          } else if (ord.status === 'cancelled') {
+            ordersByDriver[drvId].cancelled++;
+          } else if (['accepted', 'shopping', 'shopping_completed'].includes(ord.status)) {
+            ordersByDriver[drvId].active++;
+            busyDriverIds.add(drvId);
+            const key = `deliv_${ord.id}`;
+            if (!assignedInProgressKeys.has(key)) {
+              assignedInProgressKeys.add(key);
+              totalAssignedInProgressAll++;
             }
           }
         }
 
-        // Populate busyDriverIds from restaurant delivery orders
+        // 2. Process pharmacy delivery orders
+        if (pharmDeliveryRes.data) {
+          const pharmMap = new Map<string, any>();
+          (pharmOrdersRes.data || []).forEach((po: any) => pharmMap.set(po.id, po));
+
+          for (const pdo of pharmDeliveryRes.data) {
+            if (!pdo.assigned_driver_id) continue;
+            const drvId = String(pdo.assigned_driver_id);
+            if (!ordersByDriver[drvId]) {
+              ordersByDriver[drvId] = { active: 0, completed: 0, cancelled: 0, total: 0 };
+            }
+            ordersByDriver[drvId].total++;
+
+            const po = pharmMap.get(pdo.pharmacy_order_id);
+            const pst = (po?.status || '').toLowerCase();
+            const dst = (pdo.status || '').toLowerCase();
+
+            if (dst === 'completed' || pst === 'completed') {
+              ordersByDriver[drvId].completed++;
+              totalCompletedAll++;
+            } else if (dst === 'cancelled' || pst === 'cancelled') {
+              ordersByDriver[drvId].cancelled++;
+            } else {
+              ordersByDriver[drvId].active++;
+              busyDriverIds.add(drvId);
+              const key = `pharm_${pdo.pharmacy_order_id || pdo.id}`;
+              if (!assignedInProgressKeys.has(key)) {
+                assignedInProgressKeys.add(key);
+                totalAssignedInProgressAll++;
+              }
+            }
+          }
+        }
+
+        // 3. Process restaurant delivery orders
         if (restDeliveryRes.data && restOrdersRes.data) {
           const rOrdersMap = new Map<string, any>();
           restOrdersRes.data.forEach((ro: any) => rOrdersMap.set(ro.id, ro));
 
+          // Also map driver_user_id to driver id
+          const driverIdByUserId = new Map<string, string>();
+          rawDrivers.forEach((d) => {
+            if (d.user_id) driverIdByUserId.set(d.user_id, d.id);
+          });
+
           for (const rdo of restDeliveryRes.data) {
+            if (!rdo.driver_user_id) continue;
             const ro = rOrdersMap.get(rdo.order_id);
+            if (ro?.fulfillment_route === 'restaurant_delivery') continue;
+
+            const targetDriverId = driverIdByUserId.get(rdo.driver_user_id) || rdo.driver_user_id;
+            if (!ordersByDriver[targetDriverId]) {
+              ordersByDriver[targetDriverId] = { active: 0, completed: 0, cancelled: 0, total: 0 };
+            }
+            ordersByDriver[targetDriverId].total++;
+
             const rst = (ro?.status || '').toLowerCase();
             const dst = (rdo.status || '').toLowerCase();
-            if (
-              rdo.driver_user_id &&
-              ro?.fulfillment_route !== 'restaurant_delivery' &&
-              rst !== 'completed' &&
-              rst !== 'delivered' &&
-              rst !== 'cancelled' &&
-              rst !== 'rejected' &&
-              dst !== 'delivered' &&
-              dst !== 'cancelled'
-            ) {
+
+            if (dst === 'delivered' || rst === 'delivered' || rst === 'completed') {
+              ordersByDriver[targetDriverId].completed++;
+              totalCompletedAll++;
+            } else if (dst === 'cancelled' || rst === 'cancelled' || rst === 'rejected') {
+              ordersByDriver[targetDriverId].cancelled++;
+            } else {
+              ordersByDriver[targetDriverId].active++;
               busyDriverIds.add(String(rdo.driver_user_id));
+              busyDriverIds.add(String(targetDriverId));
+              const key = `rest_${rdo.order_id || rdo.id}`;
+              if (!assignedInProgressKeys.has(key)) {
+                assignedInProgressKeys.add(key);
+                totalAssignedInProgressAll++;
+              }
             }
           }
         }
       } catch (err) {
         console.warn('Could not fetch active orders for driver status aggregation:', err);
-      }
-
-      // Group orders by assigned_driver_id for stats count
-      const ordersByDriver: Record<string, { active: number; completed: number; cancelled: number; total: number }> = {};
-      let totalCompletedAll = 0;
-      let totalAssignedAll = 0;
-
-      for (const ord of ordersData) {
-        if (!ord.assigned_driver_id) continue;
-        totalAssignedAll++;
-        if (!ordersByDriver[ord.assigned_driver_id]) {
-          ordersByDriver[ord.assigned_driver_id] = { active: 0, completed: 0, cancelled: 0, total: 0 };
-        }
-        ordersByDriver[ord.assigned_driver_id].total++;
-
-        if (ord.status === 'completed') {
-          ordersByDriver[ord.assigned_driver_id].completed++;
-          totalCompletedAll++;
-        } else if (ord.status === 'cancelled') {
-          ordersByDriver[ord.assigned_driver_id].cancelled++;
-        } else if (
-          ['accepted', 'shopping', 'shopping_completed'].includes(ord.status)
-        ) {
-          ordersByDriver[ord.assigned_driver_id].active++;
-        }
       }
 
       // 4. Fetch associated profiles to get emails
@@ -3833,7 +3924,7 @@ export const adminService = {
           busy_drivers: busyCount,
           inactive_drivers: inactiveNowCount,
           ineligible_drivers: ineligibleCount,
-          total_assigned_orders: totalAssignedAll,
+          total_assigned_orders: totalAssignedInProgressAll,
           completed_orders: totalCompletedAll,
           active_drivers: activeCount, // compatibility
         },
