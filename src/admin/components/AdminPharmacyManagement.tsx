@@ -444,6 +444,7 @@ export const AdminPharmacyManagement: React.FC = () => {
 
   // Active drivers for driver assignment RPC `pharmacy_admin_assign_driver`
   const [availableDrivers, setAvailableDrivers] = useState<DeliveryDriver[]>([]);
+  const [driverVerificationError, setDriverVerificationError] = useState<string | null>(null);
   const [selectedDriverIdForAssign, setSelectedDriverIdForAssign] = useState<string>('');
   const [isAssigningDriver, setIsAssigningDriver] = useState(false);
 
@@ -488,10 +489,12 @@ export const AdminPharmacyManagement: React.FC = () => {
 
   const loadAvailableDrivers = useCallback(async (currentAssignedId?: string) => {
     try {
-      const drivers = await adminService.getAvailableDeliveryDriversForAssign(currentAssignedId);
-      setAvailableDrivers(drivers);
-    } catch {
-      // ignore
+      const res = await adminService.getAvailableDeliveryDriversForAssign(currentAssignedId);
+      setAvailableDrivers(res.drivers);
+      setDriverVerificationError(res.verificationError || null);
+    } catch (err: any) {
+      setAvailableDrivers([]);
+      setDriverVerificationError(err?.message || 'تعذر التحقق من حالة المناديب');
     }
   }, []);
 
@@ -2764,7 +2767,16 @@ export const AdminPharmacyManagement: React.FC = () => {
                         </div>
                       ) : (
                         <div className="space-y-2">
-                          {availableDrivers.length === 0 ? (
+                          {driverVerificationError ? (
+                            <div className="p-3 rounded-xl bg-amber-500/15 border border-amber-500/30 text-xs text-amber-300 flex items-start gap-2">
+                              <AlertTriangle className="w-4 h-4 shrink-0 text-amber-400 mt-0.5" />
+                              <div className="space-y-0.5">
+                                <div className="font-bold text-amber-200">تعذر التحقق من نشاط المناديب بدقة:</div>
+                                <div className="text-[11px] text-amber-300/90">{driverVerificationError}</div>
+                                <div className="text-[10px] text-amber-400 font-medium">حرصاً على سلامة التوزيع، تم حجب المناديب غير المؤكد فراغهم مؤقتاً.</div>
+                              </div>
+                            </div>
+                          ) : availableDrivers.length === 0 ? (
                             <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/20 text-xs text-amber-300 flex items-center gap-2">
                               <AlertTriangle className="w-4 h-4 shrink-0 text-amber-400" />
                               <span>

@@ -1298,7 +1298,7 @@ export const AdminRestaurantManagement: React.FC = () => {
 
     try {
       const areaId = activeOrderDetails.delivery_area_id || undefined;
-      const [res, availableDriversList] = await Promise.all([
+      const [res, availableRes] = await Promise.all([
         restaurantAdminService.listReassignableDrivers(areaId),
         adminService.getAvailableDeliveryDriversForAssign(activeOrderDetails.assigned_driver_id || undefined),
       ]);
@@ -1307,9 +1307,13 @@ export const AdminRestaurantManagement: React.FC = () => {
         showToast(res.error, 'error');
       }
 
+      if (availableRes.verificationError) {
+        showToast(`تنبيه: ${availableRes.verificationError} (تم تقييد المناديب المتاحين)`, 'warning');
+      }
+
       const rpcDrivers = res.drivers || [];
       const availableMap = new Map<string, any>();
-      availableDriversList.forEach((d) => {
+      availableRes.drivers.forEach((d) => {
         availableMap.set(d.id, d);
         if (d.user_id) availableMap.set(d.user_id, d);
       });

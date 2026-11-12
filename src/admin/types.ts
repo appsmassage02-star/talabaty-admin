@@ -369,6 +369,8 @@ export interface AdminOverviewStats {
   delivery_busy_now_drivers?: number;
   delivery_inactive_now_drivers?: number;
   delivery_ineligible_drivers?: number;
+  delivery_verification_unavailable_drivers?: number;
+  delivery_verification_error?: string | null;
   delivery_assigned_active_orders?: number;
   delivery_inactive_drivers?: number;
   delivery_pending_drivers?: number;
@@ -535,7 +537,7 @@ export interface DriverDocuments {
   vehicle_license_path?: string | null;
 }
 
-export type DriverActivityStatus = 'available' | 'busy' | 'inactive' | 'ineligible';
+export type DriverActivityStatus = 'available' | 'busy' | 'inactive' | 'ineligible' | 'verification_unavailable';
 
 export interface DriverActivityMeta {
   status: DriverActivityStatus;
@@ -548,6 +550,7 @@ export interface DriverActivityMeta {
   hasActiveOrder: boolean;
   heartbeatAgeSeconds: number | null;
   heartbeatAgeFormatted: string;
+  verificationError?: string | null;
 }
 
 export interface DeliveryDriver {
@@ -597,9 +600,11 @@ export interface DeliveryDriverStatsSummary {
   busy_drivers: number; // السائقون المشغولون الآن
   inactive_drivers: number; // السائقون غير النشطين
   ineligible_drivers: number; // الحساب غير معتمد أو معطل
+  verification_unavailable_drivers?: number; // تعذر التحقق من نشاطهم
   total_assigned_orders: number; // طلبات السائقين المسندة قيد التنفيذ
   completed_orders: number;
   active_drivers: number; // legacy alias = admin_active_drivers
+  verification_error?: string | null;
 }
 
 export type DeliveryOrderStatus =

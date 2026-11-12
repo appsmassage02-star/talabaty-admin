@@ -441,7 +441,17 @@ export const AdminDeliveryDrivers: React.FC = () => {
       )
       .on(
         'postgres_changes',
+        { event: '*', schema: 'public', table: 'pharmacy_orders' },
+        handleRealtimeDriverChange
+      )
+      .on(
+        'postgres_changes',
         { event: '*', schema: 'public', table: 'restaurant_delivery_orders' },
+        handleRealtimeDriverChange
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'restaurant_orders' },
         handleRealtimeDriverChange
       )
       .subscribe((status, err) => {
@@ -935,7 +945,44 @@ export const AdminDeliveryDrivers: React.FC = () => {
             </span>
           </div>
         </div>
+
+        {/* Verification Unavailable Drivers (if any) */}
+        {(stats.verification_unavailable_drivers ?? 0) > 0 && (
+          <div
+            onClick={() => setActivityStatusFilter((prev) => (prev === 'verification_unavailable' ? 'all' : 'verification_unavailable'))}
+            className={`col-span-2 md:col-span-3 lg:col-span-6 bg-amber-500/10 border border-amber-500/30 rounded-2xl p-3.5 flex items-center space-x-3 space-x-reverse shadow-sm cursor-pointer transition-colors ${
+              activityStatusFilter === 'verification_unavailable' ? 'ring-1 ring-amber-500/50 bg-amber-500/15' : ''
+            }`}
+          >
+            <div className="w-10 h-10 rounded-xl bg-amber-500/20 text-amber-400 flex items-center justify-center shrink-0">
+              <AlertTriangle className="w-5 h-5" />
+            </div>
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-bold text-amber-300">سائقون تعذر التحقق من نشاطهم بدقة</span>
+                <span className="px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-200 text-xs font-black font-mono">
+                  {stats.verification_unavailable_drivers}
+                </span>
+              </div>
+              <p className="text-[11px] text-amber-200/80 mt-0.5">
+                {stats.verification_error || 'حدث خطأ في استعلام الطلبات النشطة، وتم حجب حالة التوافر لحين استقرار قاعدة البيانات منعاً للإسناد الخاطئ.'}
+              </p>
+            </div>
+          </div>
+        )}
       </div>
+
+      {/* Verification Error Standalone Alert */}
+      {stats.verification_error && (stats.verification_unavailable_drivers ?? 0) === 0 && (
+        <div className="p-3.5 rounded-2xl bg-amber-500/15 border border-amber-500/30 flex items-start space-x-3 space-x-reverse text-amber-200 text-xs">
+          <AlertTriangle className="w-5 h-5 text-amber-400 shrink-0 mt-0.5" />
+          <div>
+            <div className="font-bold">تنبيه التحقق من الطلبات النشطة:</div>
+            <div className="text-[11px] text-amber-300/90 mt-0.5">{stats.verification_error}</div>
+            <div className="text-[10px] text-amber-400 font-medium mt-1">يتم تعليق الإسناد التلقائي للمناديب لحين التحقق الدقيق من عدم انشغالهم.</div>
+          </div>
+        </div>
+      )}
 
       {/* ------------------------------------------------------------------- */}
       {/* 3. Search and Filters Bar */}
@@ -975,6 +1022,7 @@ export const AdminDeliveryDrivers: React.FC = () => {
               <option value="busy">🟡 مشغول بطلب جاري</option>
               <option value="inactive">⚪ غير نشط (لا يوجد اتصال)</option>
               <option value="ineligible">🔴 غير معتمد أو معطل</option>
+              <option value="verification_unavailable">⚠️ تعذر التحقق من النشاط</option>
             </select>
           </div>
 
