@@ -529,6 +529,10 @@ export const AdminPharmacyManagement: React.FC = () => {
   }, [pendingOpenOrderId, openOrderDetails]);
 
   const handleAssignDriver = async () => {
+    if (driverVerificationError) {
+      showToast(`محجوب أمنياً: ${driverVerificationError}. لا يمكن إسناد أي مندوب حالياً حرصاً على سلامة التوزيع.`, 'error');
+      return;
+    }
     if (!selectedOrderId || !selectedDriverIdForAssign) {
       showToast('يرجى اختيار المندوب أولاً', 'error');
       return;
@@ -2788,23 +2792,33 @@ export const AdminPharmacyManagement: React.FC = () => {
                             <select
                               value={selectedDriverIdForAssign}
                               onChange={(e) => setSelectedDriverIdForAssign(e.target.value)}
-                              className="flex-1 bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white outline-none"
+                              disabled={Boolean(driverVerificationError) || isAssigningDriver}
+                              className="flex-1 bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white outline-none disabled:opacity-50 disabled:cursor-not-allowed"
                             >
-                              <option value="">— اختر مندوب توصيل متاح الآن —</option>
-                              {availableDrivers.map((drv) => {
-                                const isCurrent = drv.id === orderDetails.deliveryOrder?.assigned_driver_id;
-                                return (
-                                  <option key={drv.id} value={drv.id}>
-                                    {drv.full_name} ({drv.phone}) {isCurrent ? '— (المندوب الحالي لهذا الطلب)' : '— [متاح الآن]'}
-                                  </option>
-                                );
-                              })}
+                              <option value="">
+                                {driverVerificationError
+                                  ? '— محجوب أمنياً: تعذر التحقق من حالة المناديب —'
+                                  : '— اختر مندوب توصيل متاح الآن —'}
+                              </option>
+                              {!driverVerificationError &&
+                                availableDrivers.map((drv) => {
+                                  const isCurrent = drv.id === orderDetails.deliveryOrder?.assigned_driver_id;
+                                  return (
+                                    <option key={drv.id} value={drv.id}>
+                                      {drv.full_name} ({drv.phone}) {isCurrent ? '— (المندوب الحالي لهذا الطلب)' : '— [متاح الآن]'}
+                                    </option>
+                                  );
+                                })}
                             </select>
                             <button
                               type="button"
-                              disabled={isAssigningDriver || !selectedDriverIdForAssign}
+                              disabled={
+                                Boolean(driverVerificationError) ||
+                                isAssigningDriver ||
+                                !selectedDriverIdForAssign
+                              }
                               onClick={handleAssignDriver}
-                              className="px-4 py-2 rounded-xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-bold flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50"
+                              className="px-4 py-2 rounded-xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-bold flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
                             >
                               {isAssigningDriver ? (
                                 <RefreshCw className="w-3.5 h-3.5 animate-spin" />

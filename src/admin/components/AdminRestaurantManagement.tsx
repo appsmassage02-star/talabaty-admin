@@ -285,6 +285,7 @@ export const AdminRestaurantManagement: React.FC = () => {
   const [isReassignModalOpen, setIsReassignModalOpen] = useState(false);
   const [reassignableDrivers, setReassignableDrivers] = useState<ReassignableDriver[]>([]);
   const [isLoadingReassignableDrivers, setIsLoadingReassignableDrivers] = useState(false);
+  const [reassignVerificationError, setReassignVerificationError] = useState<string | null>(null);
   const [selectedNewDriverId, setSelectedNewDriverId] = useState('');
   const [reassignReason, setReassignReason] = useState('');
   const [isSubmittingReassignment, setIsSubmittingReassignment] = useState(false);
@@ -1295,6 +1296,7 @@ export const AdminRestaurantManagement: React.FC = () => {
     setSelectedNewDriverId('');
     setReassignReason('');
     setIsLoadingReassignableDrivers(true);
+    setReassignVerificationError(null);
 
     try {
       const areaId = activeOrderDetails.delivery_area_id || undefined;
@@ -1308,7 +1310,10 @@ export const AdminRestaurantManagement: React.FC = () => {
       }
 
       if (availableRes.verificationError) {
-        showToast(`تنبيه: ${availableRes.verificationError} (تم تقييد المناديب المتاحين)`, 'warning');
+        setReassignVerificationError(availableRes.verificationError);
+        setReassignableDrivers([]);
+        showToast(`محجوب أمنياً: ${availableRes.verificationError}. تم إيقاف اختيار المناديب مؤقتاً.`, 'error');
+        return;
       }
 
       const rpcDrivers = res.drivers || [];
@@ -1318,7 +1323,8 @@ export const AdminRestaurantManagement: React.FC = () => {
         if (d.user_id) availableMap.set(d.user_id, d);
       });
 
-      // Filter: Only include drivers who are confirmed available in live evaluation (or currently assigned driver)
+      // Filter: Only include drivers who are confirmed available in live evaluation
+      // (Strict Security: No exception for current assigned driver if verification failed or when choosing a new driver)
       const verifiedDrivers = rpcDrivers.filter((rd: any) => {
         const match =
           availableMap.get(rd.id) ||
@@ -1330,6 +1336,8 @@ export const AdminRestaurantManagement: React.FC = () => {
       setReassignableDrivers(verifiedDrivers);
     } catch (err: any) {
       showToast(err?.message || 'حدث خطأ أثناء تحميل قائمة المناديب', 'error');
+      setReassignVerificationError(err?.message || 'خطأ في جلب بيانات المناديب');
+      setReassignableDrivers([]);
     } finally {
       setIsLoadingReassignableDrivers(false);
     }
@@ -1337,6 +1345,10 @@ export const AdminRestaurantManagement: React.FC = () => {
 
   const handleSubmitReassign = async () => {
     if (!activeOrderDetails) return;
+    if (reassignVerificationError) {
+      showToast(`محجوب أمنياً: ${reassignVerificationError}. لا يمكن إعادة الإسناد حالياً.`, 'error');
+      return;
+    }
     if (!selectedNewDriverId) {
       showToast('يرجى اختيار المندوب الجديد للإسناد', 'error');
       return;
@@ -6238,6 +6250,18 @@ export const AdminRestaurantManagement: React.FC = () => {
                   </div>
                 </div>
 
+                {/* Verification Error Security Banner */}
+                {reassignVerificationError && (
+                  <div className="p-3.5 bg-rose-500/15 border border-rose-500/30 rounded-2xl text-rose-200 text-xs flex items-start gap-2.5">
+                    <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+                    <div>
+                      <div className="font-bold text-rose-100">محجوب أمنياً: تعذر التحقق من انشغال السائقين</div>
+                      <div className="text-[11px] text-rose-300/90 mt-0.5">{reassignVerificationError}</div>
+                      <div className="text-[10px] text-rose-400 font-medium mt-1">حرصاً على سلامة المنظومة، تم إيقاف إمكانية اختيار المناديب وتأكيد الإسناد لحين استقرار الاتصال.</div>
+                    </div>
+                  </div>
+                )}
+
                 {/* Eligible Drivers List */}
                 <div className="space-y-2">
                   <div className="flex items-center justify-between">
@@ -6253,6 +6277,14 @@ export const AdminRestaurantManagement: React.FC = () => {
                     <div className="p-6 text-center text-slate-400 text-xs flex flex-col items-center gap-2 bg-slate-950 rounded-2xl border border-slate-800">
                       <RefreshCw className="w-5 h-5 animate-spin text-amber-400" />
                       <span>جاري جلب المناديب المتاحين في النطاق...</span>
+                    </div>
+                  ) : reassignVerificationError ? (
+                    <div className="p-5 text-center bg-slate-950 border border-slate-800 rounded-2xl text-slate-400 text-xs space-y-1">
+                      <Ban className="w-6 h-6 text-rose-400 mx-auto mb-1" />
+                      <div className="font-bold text-slate-300">تم حجب قائمة السائقين مؤقتاً</div>
+                      <p className="text-[11px] text-slate-500">
+                        لا يمكن اختيار سائق جديد في ظل تعذر التحقق من خلو السائقين من الطلبات.
+                      </p>
                     </div>
                   ) : reassignableDrivers.length === 0 ? (
                     <div className="p-5 text-center bg-slate-950 border border-slate-800 rounded-2xl text-slate-400 text-xs space-y-1">
@@ -6319,8 +6351,13 @@ export const AdminRestaurantManagement: React.FC = () => {
                   <textarea
                     value={reassignReason}
                     onChange={(e) => setReassignReason(e.target.value)}
-                    placeholder="اكتب سبب إعادة الإسناد (مثل: تأخر السائق، تعطل وسيلة النقل، إلغاء السائق)..."
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-white outline-none focus:border-amber-500 h-20 text-xs"
+                    disabled={Boolean(reassignVerificationError)}
+                    placeholder={
+                      reassignVerificationError
+                        ? 'محجوب أمنياً: تعذر التحقق من السائقين المتاحين'
+                        : 'اكتب سبب إعادة الإسناد (مثل: تأخر السائق، تعطل وسيلة النقل، إلغاء السائق)...'
+                    }
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-white outline-none focus:border-amber-500 h-20 text-xs disabled:opacity-50 disabled:cursor-not-allowed"
                   />
                 </div>
 
@@ -6334,9 +6371,13 @@ export const AdminRestaurantManagement: React.FC = () => {
                   </button>
                   <button
                     type="button"
-                    disabled={!selectedNewDriverId || !reassignReason.trim()}
+                    disabled={
+                      Boolean(reassignVerificationError) ||
+                      !selectedNewDriverId ||
+                      !reassignReason.trim()
+                    }
                     onClick={handleSubmitReassign}
-                    className="px-5 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-bold flex items-center gap-1.5 transition cursor-pointer disabled:opacity-50 shadow-lg shadow-amber-500/20"
+                    className="px-5 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-bold flex items-center gap-1.5 transition cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed shadow-lg shadow-amber-500/20"
                   >
                     <span>متابعة وتأكيد</span>
                     <ArrowRight className="w-4 h-4 rotate-180" />
@@ -6389,9 +6430,9 @@ export const AdminRestaurantManagement: React.FC = () => {
 
                   <button
                     type="button"
-                    disabled={isSubmittingReassignment}
+                    disabled={isSubmittingReassignment || Boolean(reassignVerificationError)}
                     onClick={handleSubmitReassign}
-                    className="px-5 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-xs font-bold flex items-center gap-2 transition cursor-pointer disabled:opacity-50 shadow-lg shadow-emerald-500/20"
+                    className="px-5 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-xs font-bold flex items-center gap-2 transition cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed shadow-lg shadow-emerald-500/20"
                   >
                     {isSubmittingReassignment ? (
                       <Loader2 className="w-4 h-4 animate-spin" />

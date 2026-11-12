@@ -501,7 +501,8 @@ export const adminService = {
         if (!rdo.driver_user_id) continue;
         const rOrderInfo = restOrdersMap.get(rdo.order_id);
         if (!rOrderInfo) continue;
-        if (rOrderInfo.fulfillment_route === 'restaurant_delivery') continue; // exclude self delivery
+        // Strict: Must literally be 'driver_delivery'. Any other value (restaurant_delivery, null, undefined, unknown) is excluded!
+        if (rOrderInfo.fulfillment_route !== 'driver_delivery') continue;
         if (allowedRestOrderStatuses.has(rOrderInfo.status)) {
           const rawUserId = String(rdo.driver_user_id);
           busyDriverIds.add(rawUserId);
@@ -778,7 +779,7 @@ export const adminService = {
           restaurantActiveOrders++;
           if (
             rdo?.driver_user_id &&
-            o.fulfillment_route !== 'restaurant_delivery' &&
+            o.fulfillment_route === 'driver_delivery' &&
             (rdo.status || '').toLowerCase() !== 'delivered' &&
             (rdo.status || '').toLowerCase() !== 'cancelled'
           ) {
@@ -1444,8 +1445,8 @@ export const adminService = {
 
         const ro = rOrdersById.get(rdo.order_id);
 
-        // Strict: Do NOT include restaurant self-delivery (fulfillment_route === 'restaurant_delivery')
-        if (ro && ro.fulfillment_route === 'restaurant_delivery') {
+        // Strict: Must literally be 'driver_delivery' to be included in driver-assigned platform orders
+        if (!ro || ro.fulfillment_route !== 'driver_delivery') {
           continue;
         }
 
