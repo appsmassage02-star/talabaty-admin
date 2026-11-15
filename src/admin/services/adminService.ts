@@ -6078,6 +6078,7 @@ export const adminService = {
 
       const order: DeliveryOrder = {
         id: orderData.id,
+        order_source: 'delivery',
         order_number: orderData.order_number || null,
         household_id: orderData.household_id,
         household_name: orderData.household_name || null,
@@ -6133,7 +6134,8 @@ export const adminService = {
     decisionNote?: string
   ): Promise<{ success: boolean; newStatus?: string; error?: string }> {
     if (!supabase) return { success: false, error: 'Supabase غير متصل' };
-    if (!orderId?.trim()) {
+    const cleanOrderId = orderId?.trim() || '';
+    if (!cleanOrderId) {
       return { success: false, error: 'معرف الطلب مطلوب' };
     }
 
@@ -6146,17 +6148,29 @@ export const adminService = {
     }
 
     try {
-      // Strictly call the authoritative RPC admin_decide_cancellation with ZERO fallbacks or direct table updates
-      const rpcRes = await supabase.rpc('admin_decide_cancellation', {
-        p_order_id: orderId.trim(),
+      // 1. Verify active authenticated session (never call RPC without authenticated user)
+      const { data: sessionRes, error: sessionErr } = await supabase.auth.getSession();
+      if (sessionErr || !sessionRes?.session?.user) {
+        return {
+          success: false,
+          error:
+            sessionErr?.message ||
+            'انتهت جلسة تسجيل الدخول أو الحساب غير مصادق. يرجى تسجيل الدخول بحساب إداري معتمد لتنفيذ قرار الإلغاء.',
+        };
+      }
+
+      // 2. Call the authoritative RPC public.admin_resolve_cancellation with exact signature
+      const rpcRes = await supabase.rpc('admin_resolve_cancellation', {
+        p_order_id: cleanOrderId,
         p_approve: Boolean(approve),
-        p_decision_note: cleanNote || null,
+        p_admin_notes: cleanNote || null,
       });
 
       if (rpcRes.error) {
+        const codePart = rpcRes.error.code ? ` [${rpcRes.error.code}]` : '';
         return {
           success: false,
-          error: rpcRes.error.message || 'فشل تنفيذ قرار الإلغاء عبر دالة قاعدة البيانات المعتمدة',
+          error: `فشل تنفيذ قرار الإلغاء عبر دالة قاعدة البيانات (admin_resolve_cancellation)${codePart}: ${rpcRes.error.message || 'خطأ غير معروف'}`,
         };
       }
 
@@ -6171,31 +6185,76 @@ export const adminService = {
           error:
             (rpcRes.data as any).error ||
             (rpcRes.data as any).message ||
-            'رفضت دالة قاعدة البيانات تنفيذ قرار الإلغاء',
+            'رفضت دالة قاعدة البيانات (admin_resolve_cancellation) تنفيذ قرار الإلغاء',
         };
       }
 
+      // 3. Mandatory Read-After-Write Verification on delivery_orders & delivery_order_status_history
       const expectedNewStatus = approve ? 'cancelled' : 'accepted';
-      const actualNewStatus =
-        typeof rpcRes.data === 'object' && rpcRes.data?.new_status
-          ? rpcRes.data.new_status
-          : expectedNewStatus;
+
+      const { data: verifiedOrder, error: verifyOrderErr } = await supabase
+        .from('delivery_orders')
+        .select('id, order_number, status, cancellation_decision_note, cancellation_decided_at, updated_at')
+        .eq('id', cleanOrderId)
+        .maybeSingle();
+
+      if (verifyOrderErr || !verifiedOrder) {
+        const codePart = verifyOrderErr?.code ? ` [${verifyOrderErr.code}]` : '';
+        return {
+          success: false,
+          error: `تم استدعاء admin_resolve_cancellation لكن تعذر التحقق من حالة الطلب في delivery_orders${codePart}: ${verifyOrderErr?.message || 'السجل غير ظاهر بعد التنفيذ'}`,
+        };
+      }
+
+      if (verifiedOrder.status !== expectedNewStatus) {
+        return {
+          success: false,
+          error: `تعذر تأكيد انتقال حالة الطلب بعد استدعاء admin_resolve_cancellation: الحالة المتوقعة (${expectedNewStatus}) والحالة الفعلية في delivery_orders هي (${verifiedOrder.status}).`,
+        };
+      }
+
+      const { data: historyRows, error: verifyHistErr } = await supabase
+        .from('delivery_order_status_history')
+        .select('id, order_id, old_status, new_status, note, notes, created_at')
+        .eq('order_id', cleanOrderId)
+        .order('created_at', { ascending: false })
+        .limit(5);
+
+      if (verifyHistErr) {
+        return {
+          success: false,
+          error: `تم تحديث الطلب إلى (${verifiedOrder.status}) لكن تعذر التحقق من سجل الحالات في delivery_order_status_history [${verifyHistErr.code || 'DB_ERROR'}]: ${verifyHistErr.message}`,
+        };
+      }
+
+      const matchedHistory = (historyRows || []).find((h: any) => h.new_status === expectedNewStatus);
+      if (!matchedHistory) {
+        return {
+          success: false,
+          error: `تم تحديث الطلب إلى (${verifiedOrder.status}) لكن لم يتم رصد سجل التحول (${expectedNewStatus}) في delivery_order_status_history.`,
+        };
+      }
 
       await this.logAuditAction(
         approve ? 'CANCELLATION_APPROVED' : 'CANCELLATION_REJECTED',
         'DELIVERY_ORDER',
-        orderId.trim(),
+        cleanOrderId,
         {
+          rpc: 'admin_resolve_cancellation',
           approve: Boolean(approve),
-          decision_note: cleanNote || null,
-          new_status: actualNewStatus,
+          p_admin_notes: cleanNote || null,
+          new_status: verifiedOrder.status,
+          verified_history_id: matchedHistory.id,
         }
       );
 
-      return { success: true, newStatus: actualNewStatus };
+      return { success: true, newStatus: verifiedOrder.status };
     } catch (err: any) {
-      console.error('Error in decideCancellation RPC:', err);
-      return { success: false, error: err?.message || 'فشل تنفيذ قرار الإلغاء' };
+      console.error('Error in decideCancellation (admin_resolve_cancellation):', err);
+      return {
+        success: false,
+        error: `فشل تنفيذ قرار الإلغاء عبر admin_resolve_cancellation: ${err?.message || 'خطأ غير متوقع'}`,
+      };
     }
   },
 
@@ -6204,12 +6263,12 @@ export const adminService = {
     _reason: string,
     _adminEmail?: string
   ): Promise<{ success: boolean; error?: string }> {
-    // No approved direct admin cancellation RPC exists for Home Delivery (`delivery_orders`).
-    // `admin_decide_cancellation` is strictly for pending cancellation requests, and direct table updates are prohibited.
+    // No approved direct admin cancellation RPC exists for non-pending Home Delivery (`delivery_orders`).
+    // `admin_resolve_cancellation` is strictly for pending cancellation requests (`status = 'cancellation_pending'`), and direct table updates are prohibited.
     return {
       success: false,
       error:
-        'الإلغاء الإداري المباشر لطلبات البيت غير مدعوم حاليًا لعدم توفر دالة قاعدة بيانات (RPC) معتمدة لهذا المسار، ولا يُسمح بالتعديل المباشر على جدول الطلبات.',
+        'الإلغاء الإداري المباشر لطلبات البيت غير المعلقة غير مدعوم حاليًا لعدم توفر دالة قاعدة بيانات (RPC) معتمدة لهذا المسار، ولا يُسمح بالتعديل المباشر على جدول الطلبات.',
     };
   },
 

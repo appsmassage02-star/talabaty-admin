@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
   CentralDeliveryOwner,
+  CentralFreeDeliveryCostBearer,
   CentralRestaurantSummary,
   CentralScopeLevel,
   CentralSectionServiceAreaRecord,
@@ -94,6 +95,7 @@ export const CentralPricingTariffsTab: React.FC<CentralPricingTariffsTabProps> =
   // Filters
   const [filterService, setFilterService] = useState<string>(initialServiceFilter);
   const [filterOwner, setFilterOwner] = useState<string>('');
+  const [filterRestaurantId, setFilterRestaurantId] = useState<string>('');
   const [filterScope, setFilterScope] = useState<string>('');
   const [filterGovId, setFilterGovId] = useState<string>('');
   const [filterCenterId, setFilterCenterId] = useState<string>('');
@@ -248,6 +250,7 @@ export const CentralPricingTariffsTab: React.FC<CentralPricingTariffsTabProps> =
     return tariffs.filter((t) => {
       if (filterService && t.service_type !== filterService) return false;
       if (filterOwner && t.delivery_owner !== filterOwner) return false;
+      if (filterRestaurantId && (t.restaurant_id || '') !== filterRestaurantId) return false;
       if (filterScope && t.scope_level !== filterScope) return false;
       if (filterGovId && t.governorate_id !== filterGovId) return false;
       if (filterCenterId && t.center_id !== filterCenterId) return false;
@@ -268,6 +271,7 @@ export const CentralPricingTariffsTab: React.FC<CentralPricingTariffsTabProps> =
     tariffs,
     filterService,
     filterOwner,
+    filterRestaurantId,
     filterScope,
     filterGovId,
     filterCenterId,
@@ -289,7 +293,8 @@ export const CentralPricingTariffsTab: React.FC<CentralPricingTariffsTabProps> =
   const existingAreaIdsForContext = useMemo(() => {
     const set = new Set<string>();
     if (!formGovId || !formCenterId) return set;
-    const normRestId = formOwner === 'restaurant' ? formRestaurantId || null : null;
+    if (formService === 'ready_food' && !formRestaurantId) return set;
+    const normRestId = formService === 'ready_food' ? formRestaurantId || null : null;
     for (const t of tariffs) {
       if (
         t.scope_level === 'area' &&
@@ -310,7 +315,7 @@ export const CentralPricingTariffsTab: React.FC<CentralPricingTariffsTabProps> =
     () =>
       previewGeneratedTariffValues({
         base_delivery_fee: formBaseFee,
-        admin_commission: formAdminComm,
+        admin_commission: formOwner === 'restaurant' ? 0 : formAdminComm,
         delivery_owner: formOwner,
         is_free_delivery: formIsFree,
       }),
@@ -320,6 +325,7 @@ export const CentralPricingTariffsTab: React.FC<CentralPricingTariffsTabProps> =
   // Live conflict check BEFORE saving inside Modal (single or batch)
   const liveModalConflicts = useMemo(() => {
     if (!isModalOpen || !formGovId) return null;
+    if (formService === 'ready_food' && !formRestaurantId) return null;
     if (!editingId && formScope === 'area') return null;
     if (formScope === 'center' && !formCenterId) return null;
     if (formScope === 'area' && (!formCenterId || !formAreaId)) return null;
@@ -328,7 +334,7 @@ export const CentralPricingTariffsTab: React.FC<CentralPricingTariffsTabProps> =
         id: editingId,
         service_type: formService,
         delivery_owner: formOwner,
-        restaurant_id: formOwner === 'restaurant' ? formRestaurantId || null : null,
+        restaurant_id: formService === 'ready_food' ? formRestaurantId || null : null,
         scope_level: formScope,
         governorate_id: formGovId,
         center_id: formScope === 'governorate' ? null : formCenterId || null,
@@ -355,11 +361,12 @@ export const CentralPricingTariffsTab: React.FC<CentralPricingTariffsTabProps> =
     if (!isModalOpen || editingId || formScope !== 'area' || !formGovId || !formCenterId || formAreaIds.length === 0) {
       return null;
     }
+    if (formService === 'ready_food' && !formRestaurantId) return null;
     return detectBatchTariffConflicts(
       {
         service_type: formService,
         delivery_owner: formOwner,
-        restaurant_id: formOwner === 'restaurant' ? formRestaurantId || null : null,
+        restaurant_id: formService === 'ready_food' ? formRestaurantId || null : null,
         governorate_id: formGovId,
         center_id: formCenterId,
         area_ids: formAreaIds,
@@ -393,7 +400,7 @@ export const CentralPricingTariffsTab: React.FC<CentralPricingTariffsTabProps> =
       {
         service_type: simService,
         delivery_owner: simOwner,
-        restaurant_id: simOwner === 'restaurant' ? simRestaurantId || null : null,
+        restaurant_id: simService === 'ready_food' ? simRestaurantId || null : null,
         governorate_id: simGovId,
         center_id: simCenterId || null,
         area_id: simAreaId || null,
@@ -416,11 +423,12 @@ export const CentralPricingTariffsTab: React.FC<CentralPricingTariffsTabProps> =
   ]);
 
   const openCreateModal = () => {
+    const defaultService = (filterService as CentralServiceType) || 'household_shortages';
     setEditingId(undefined);
     setEditingTariff(null);
-    setFormService((filterService as CentralServiceType) || 'household_shortages');
+    setFormService(defaultService);
     setFormOwner('platform');
-    setFormRestaurantId('');
+    setFormRestaurantId(defaultService === 'ready_food' && filterRestaurantId ? filterRestaurantId : '');
     setFormScope('area');
     setFormGovId('');
     setFormCenterId('');
@@ -439,11 +447,17 @@ export const CentralPricingTariffsTab: React.FC<CentralPricingTariffsTabProps> =
   };
 
   const openEditModal = (t: DeliveryAreaTariff) => {
+    const isFree = Boolean(t.is_free_delivery);
+    const syncedBearer: CentralFreeDeliveryCostBearer | '' = isFree
+      ? t.delivery_owner === 'restaurant'
+        ? 'restaurant'
+        : 'platform'
+      : '';
     setEditingId(t.id);
     setEditingTariff(t);
     setFormService(t.service_type);
     setFormOwner(t.delivery_owner);
-    setFormRestaurantId(t.restaurant_id || '');
+    setFormRestaurantId(t.service_type === 'ready_food' ? t.restaurant_id || '' : '');
     setFormScope(t.scope_level);
     setFormGovId(t.governorate_id);
     setFormCenterId(t.center_id || '');
@@ -451,9 +465,9 @@ export const CentralPricingTariffsTab: React.FC<CentralPricingTariffsTabProps> =
     setFormAreaIds(t.area_id ? [t.area_id] : []);
     setAreaPickerSearch('');
     setFormBaseFee(String(t.base_delivery_fee));
-    setFormAdminComm(String(t.admin_commission));
-    setFormIsFree(Boolean(t.is_free_delivery));
-    setFormBearer(t.free_delivery_cost_bearer || '');
+    setFormAdminComm(t.delivery_owner === 'restaurant' ? '0' : String(t.admin_commission));
+    setFormIsFree(isFree);
+    setFormBearer(syncedBearer);
     setFormMinutes(
       t.estimated_delivery_minutes !== null && t.estimated_delivery_minutes !== undefined
         ? String(t.estimated_delivery_minutes)
@@ -484,6 +498,15 @@ export const CentralPricingTariffsTab: React.FC<CentralPricingTariffsTabProps> =
     e.preventDefault();
     setModalSubmitError(null);
 
+    const effectiveRestaurantId =
+      formService === 'ready_food' ? formRestaurantId.trim() || null : null;
+    const effectiveAdminCommission = formOwner === 'restaurant' ? 0 : formAdminComm;
+    const effectiveBearer: CentralFreeDeliveryCostBearer | null = formIsFree
+      ? formOwner === 'restaurant'
+        ? 'restaurant'
+        : 'platform'
+      : null;
+
     // Create mode on 'area' scope supports multi-area batch creation (1 or many areas atomically)
     if (!editingId && formScope === 'area') {
       const uniqueAreaIds: string[] = Array.from(
@@ -498,15 +521,15 @@ export const CentralPricingTariffsTab: React.FC<CentralPricingTariffsTabProps> =
         {
           service_type: formService,
           delivery_owner: formOwner,
-          restaurant_id: formOwner === 'restaurant' ? formRestaurantId || null : null,
+          restaurant_id: effectiveRestaurantId,
           scope_level: 'area',
           governorate_id: formGovId,
           center_id: formCenterId || null,
           area_id: uniqueAreaIds[0],
           base_delivery_fee: formBaseFee,
-          admin_commission: formAdminComm,
+          admin_commission: effectiveAdminCommission,
           is_free_delivery: formIsFree,
-          free_delivery_cost_bearer: formBearer || null,
+          free_delivery_cost_bearer: effectiveBearer,
           estimated_delivery_minutes: formMinutes || null,
           is_enabled: formIsEnabled,
           notes: formNotes,
@@ -530,15 +553,15 @@ export const CentralPricingTariffsTab: React.FC<CentralPricingTariffsTabProps> =
       const batchInput: DeliveryAreaTariffBatchInput = {
         service_type: formService,
         delivery_owner: formOwner,
-        restaurant_id: formOwner === 'restaurant' ? formRestaurantId || null : null,
+        restaurant_id: effectiveRestaurantId,
         scope_level: 'area',
         governorate_id: formGovId,
         center_id: formCenterId,
         area_ids: uniqueAreaIds,
         base_delivery_fee: formBaseFee,
-        admin_commission: formAdminComm,
+        admin_commission: effectiveAdminCommission,
         is_free_delivery: formIsFree,
-        free_delivery_cost_bearer: formBearer || null,
+        free_delivery_cost_bearer: effectiveBearer,
         estimated_delivery_minutes: formMinutes || null,
         is_enabled: formIsEnabled,
         notes: formNotes,
@@ -569,15 +592,15 @@ export const CentralPricingTariffsTab: React.FC<CentralPricingTariffsTabProps> =
       id: editingId,
       service_type: formService,
       delivery_owner: formOwner,
-      restaurant_id: formOwner === 'restaurant' ? formRestaurantId || null : null,
+      restaurant_id: effectiveRestaurantId,
       scope_level: formScope,
       governorate_id: formGovId,
       center_id: formScope === 'governorate' ? null : formCenterId || null,
       area_id: formScope === 'area' ? formAreaId || null : null,
       base_delivery_fee: formBaseFee,
-      admin_commission: formAdminComm,
+      admin_commission: effectiveAdminCommission,
       is_free_delivery: formIsFree,
-      free_delivery_cost_bearer: formBearer || null,
+      free_delivery_cost_bearer: effectiveBearer,
       estimated_delivery_minutes: formMinutes || null,
       is_enabled: formIsEnabled,
       notes: formNotes,
@@ -769,9 +792,9 @@ export const CentralPricingTariffsTab: React.FC<CentralPricingTariffsTabProps> =
               </select>
             </div>
 
-            {simOwner === 'restaurant' && (
+            {simService === 'ready_food' && (
               <div>
-                <label className="block text-[11px] font-bold text-slate-400 mb-1">المطعم</label>
+                <label className="block text-[11px] font-bold text-amber-300 mb-1">المطعم المحدد *</label>
                 <select
                   value={simRestaurantId}
                   onChange={(e) => setSimRestaurantId(e.target.value)}
@@ -935,7 +958,13 @@ export const CentralPricingTariffsTab: React.FC<CentralPricingTariffsTabProps> =
 
         <select
           value={filterService}
-          onChange={(e) => setFilterService(e.target.value)}
+          onChange={(e) => {
+            const val = e.target.value;
+            setFilterService(val);
+            if (val && val !== 'ready_food') {
+              setFilterRestaurantId('');
+            }
+          }}
           className="bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white"
         >
           <option value="">كل أقسام الخدمات</option>
@@ -955,6 +984,21 @@ export const CentralPricingTariffsTab: React.FC<CentralPricingTariffsTabProps> =
           <option value="platform">توصيل المنصة (platform)</option>
           <option value="restaurant">توصيل المطعم (restaurant)</option>
         </select>
+
+        {(!filterService || filterService === 'ready_food') && (
+          <select
+            value={filterRestaurantId}
+            onChange={(e) => setFilterRestaurantId(e.target.value)}
+            className="bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white"
+          >
+            <option value="">كل المطاعم (الأكلات الجاهزة)</option>
+            {restaurants.map((r) => (
+              <option key={r.id} value={r.id}>
+                {r.name}
+              </option>
+            ))}
+          </select>
+        )}
 
         <select
           value={filterScope}
@@ -1047,8 +1091,12 @@ export const CentralPricingTariffsTab: React.FC<CentralPricingTariffsTabProps> =
                       <span className="font-black text-white block">{getServiceLabelAr(t.service_type)}</span>
                       <span className="text-[10px] text-slate-400 block mt-0.5">
                         {getDeliveryOwnerLabelAr(t.delivery_owner)}
-                        {t.restaurant_name ? ` · ${t.restaurant_name}` : ''}
                       </span>
+                      {t.service_type === 'ready_food' && t.restaurant_name && (
+                        <span className="inline-block mt-1 px-2 py-0.5 rounded-md bg-amber-500/15 text-amber-300 border border-amber-500/30 text-[10px] font-bold">
+                          المطعم: {t.restaurant_name}
+                        </span>
+                      )}
                     </td>
                     <td className="p-3.5">
                       <span className="px-2 py-0.5 rounded-lg text-[10px] font-bold bg-slate-800 text-sky-300 border border-slate-700 inline-block mb-1">
@@ -1237,9 +1285,15 @@ export const CentralPricingTariffsTab: React.FC<CentralPricingTariffsTabProps> =
                       onChange={(e) => {
                         const val = e.target.value as CentralServiceType;
                         setFormService(val);
+                        setModalSubmitError(null);
                         if (val !== 'ready_food') {
                           setFormOwner('platform');
                           setFormRestaurantId('');
+                          if (formIsFree) setFormBearer('platform');
+                        } else {
+                          setFormRestaurantId('');
+                          setFormAreaId('');
+                          setFormAreaIds([]);
                         }
                       }}
                       className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2.5 text-white"
@@ -1259,7 +1313,15 @@ export const CentralPricingTariffsTab: React.FC<CentralPricingTariffsTabProps> =
                       onChange={(e) => {
                         const val = e.target.value as CentralDeliveryOwner;
                         setFormOwner(val);
-                        if (val === 'platform') setFormRestaurantId('');
+                        setModalSubmitError(null);
+                        if (val === 'restaurant') {
+                          setFormAdminComm('0');
+                        } else if (editingTariff?.delivery_owner === 'restaurant' || formAdminComm === '0') {
+                          setFormAdminComm('');
+                        }
+                        if (formIsFree) {
+                          setFormBearer(val);
+                        }
                       }}
                       className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2.5 text-white"
                     >
@@ -1295,13 +1357,18 @@ export const CentralPricingTariffsTab: React.FC<CentralPricingTariffsTabProps> =
                   </div>
                 </div>
 
-                {formOwner === 'restaurant' && (
-                  <div>
-                    <label className="block font-bold text-slate-300 mb-1">المطعم المحدد *</label>
+                {formService === 'ready_food' && (
+                  <div className="p-3.5 rounded-2xl bg-amber-950/20 border border-amber-500/30 space-y-1.5">
+                    <label className="block font-bold text-amber-200">
+                      المطعم المحدد (إلزامي لقسم الأكلات الجاهزة) *
+                    </label>
                     <select
                       required
                       value={formRestaurantId}
-                      onChange={(e) => setFormRestaurantId(e.target.value)}
+                      onChange={(e) => {
+                        setFormRestaurantId(e.target.value);
+                        setModalSubmitError(null);
+                      }}
                       className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2.5 text-white"
                     >
                       <option value="">اختر المطعم...</option>
@@ -1311,6 +1378,9 @@ export const CentralPricingTariffsTab: React.FC<CentralPricingTariffsTabProps> =
                         </option>
                       ))}
                     </select>
+                    <p className="text-[10px] text-amber-300/90 leading-relaxed">
+                      يشترط النظام وقاعدة البيانات ربط تسعيرة الأكلات الجاهزة بمطعم محدد سواء كانت جهة التوصيل «توصيل المنصة (طلباتي)» أو «توصيل المطعم».
+                    </p>
                   </div>
                 )}
 
@@ -1533,17 +1603,28 @@ export const CentralPricingTariffsTab: React.FC<CentralPricingTariffsTabProps> =
                     />
                   </div>
                   <div>
-                    <label className="block font-bold text-slate-300 mb-1">عمولة الإدارة *</label>
-                    <input
-                      type="number"
-                      step="0.01"
-                      min="0"
-                      required
-                      placeholder="أدخل القيمة"
-                      value={formAdminComm}
-                      onChange={(e) => setFormAdminComm(e.target.value)}
-                      className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2.5 text-white font-mono"
-                    />
+                    <label className="block font-bold text-slate-300 mb-1">
+                      {formOwner === 'restaurant' ? 'عمولة الإدارة' : 'عمولة الإدارة *'}
+                    </label>
+                    {formOwner === 'restaurant' ? (
+                      <div className="w-full bg-slate-950/80 border border-emerald-500/30 rounded-xl px-3 py-2.5 text-emerald-300 font-bold flex items-center justify-between gap-2">
+                        <span>لا توجد عمولة إدارية على توصيل المطعم</span>
+                        <span className="font-mono text-[11px] bg-emerald-500/15 px-2 py-0.5 rounded-lg border border-emerald-500/30 shrink-0">
+                          0 ج.م تلقائياً
+                        </span>
+                      </div>
+                    ) : (
+                      <input
+                        type="number"
+                        step="0.01"
+                        min="0"
+                        required
+                        placeholder="أدخل القيمة"
+                        value={formAdminComm}
+                        onChange={(e) => setFormAdminComm(e.target.value)}
+                        className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2.5 text-white font-mono"
+                      />
+                    )}
                   </div>
                 </div>
 
@@ -1620,7 +1701,11 @@ export const CentralPricingTariffsTab: React.FC<CentralPricingTariffsTabProps> =
                       <input
                         type="checkbox"
                         checked={formIsFree}
-                        onChange={(e) => setFormIsFree(e.target.checked)}
+                        onChange={(e) => {
+                          const checked = e.target.checked;
+                          setFormIsFree(checked);
+                          setFormBearer(checked ? formOwner : '');
+                        }}
                         className="w-4 h-4 rounded text-emerald-500 bg-slate-900 border-slate-700"
                       />
                       <span>توصيل مجاني للعميل (is_free_delivery)</span>
@@ -1628,23 +1713,29 @@ export const CentralPricingTariffsTab: React.FC<CentralPricingTariffsTabProps> =
 
                     <div>
                       <label className="block font-bold text-slate-400 mb-1">
-                        الجهة المتحملة لتكلفة التوصيل المجاني {formIsFree ? '*' : '(اختياري عند عدم التفعيل)'}
+                        الجهة المتحملة لتكلفة التوصيل المجاني {formIsFree ? '*' : '(معطل — NULL تلقائياً)'}
                       </label>
-                      <select
-                        value={formBearer}
-                        required={formIsFree}
-                        onChange={(e) => setFormBearer(e.target.value)}
-                        className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-white"
-                      >
-                        <option value="">اختر الجهة صراحةً...</option>
-                        <option value="platform">تتحملها المنصة (platform)</option>
-                        <option value="restaurant">يتحملها المطعم (restaurant)</option>
-                        <option value="split">مقسمة بين المنصة والمطعم (split)</option>
-                        {!formIsFree && <option value="none">بدون (none)</option>}
-                      </select>
+                      {formIsFree ? (
+                        <select
+                          value={formBearer || formOwner}
+                          required
+                          onChange={(e) => setFormBearer(e.target.value)}
+                          className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-white"
+                        >
+                          {formOwner === 'platform' ? (
+                            <option value="platform">تتحملها المنصة (platform)</option>
+                          ) : (
+                            <option value="restaurant">يتحملها المطعم (restaurant)</option>
+                          )}
+                        </select>
+                      ) : (
+                        <div className="w-full bg-slate-900/60 border border-slate-800 rounded-xl px-3 py-2 text-slate-500">
+                          غير مفعل (يُحفظ كـ NULL تلقائياً عند التوصيل المدفوع)
+                        </div>
+                      )}
                       {formIsFree && (
                         <p className="text-[10px] text-sky-300 mt-1">
-                          لن يتم تصفير الرسوم الأساسية أو عمولة الإدارة أو صافي المندوب تلقائياً عند اختيار التوصيل المجاني.
+                          تُحدد جهة التحمل تلقائياً بما يطابق جهة التوصيل ({formOwner === 'platform' ? 'platform للمنصة' : 'restaurant للمطعم'}) دون تصفير الرسوم الأساسية أو صافي المندوب.
                         </p>
                       )}
                     </div>

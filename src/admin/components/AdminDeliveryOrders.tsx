@@ -43,7 +43,7 @@ import {
 
 export const AdminDeliveryOrders: React.FC = () => {
   const { hasPermission, showToast, adminUser, sectionFilter, clearSectionFilter } = useAdmin();
-  const canManage = hasPermission('delivery.manage');
+  const canManage = hasPermission('delivery.manage') || hasPermission('orders.manage');
 
   // Orders & Stats State
   const [orders, setOrders] = useState<DeliveryOrder[]>([]);
@@ -257,23 +257,30 @@ export const AdminDeliveryOrders: React.FC = () => {
   const handleSubmitDecision = async () => {
     if (!cancellationAction) return;
     if (!canManage) {
-      showToast('عفواً، لا تملك صلاحية delivery.manage لتنفيذ هذا الإجراء الإداري', 'error');
+      showToast('عفواً، لا تملك صلاحية delivery.manage أو orders.manage لتنفيذ هذا الإجراء الإداري', 'error');
       return;
     }
 
+    const isPharmacyOrder = cancellationAction.order.order_source === 'pharmacy';
     const trimmedNote = decisionNote.trim();
-    if (!cancellationAction.approve && !trimmedNote) {
+    if (!isPharmacyOrder && !cancellationAction.approve && !trimmedNote) {
       showToast('يرجى كتابة سبب رفض طلب الإلغاء (إلزامي)', 'error');
       return;
     }
 
     setIsSubmittingDecision(true);
     try {
-      const res = await adminService.decideCancellation(
-        cancellationAction.order.id,
-        cancellationAction.approve,
-        trimmedNote || undefined
-      );
+      const res = isPharmacyOrder
+        ? await adminService.decidePharmacyDriverCancellation(
+            cancellationAction.order.id,
+            cancellationAction.approve,
+            trimmedNote || undefined
+          )
+        : await adminService.decideCancellation(
+            cancellationAction.order.id,
+            cancellationAction.approve,
+            trimmedNote || undefined
+          );
 
       if (res.success) {
         const actionText = cancellationAction.approve
@@ -281,17 +288,19 @@ export const AdminDeliveryOrders: React.FC = () => {
           : 'تم رفض طلب الإلغاء وإعادة الطلب إلى السائق بحالة "جاري التوصيل"';
         showToast(actionText, 'success');
 
+        const decidedOrderId = cancellationAction.order.id;
+
         // Close decision prompt
         setCancellationAction(null);
         setDecisionNote('');
 
         // Refresh current modal details if open
-        if (selectedOrderId === cancellationAction.order.id) {
-          handleOpenDetails(cancellationAction.order.id);
+        if (selectedOrderId === decidedOrderId) {
+          await handleOpenDetails(decidedOrderId);
         }
 
         // Refresh orders list and badge counters
-        loadOrders(false);
+        await loadOrders(false);
       } else {
         showToast(res.error || 'تعذر تنفيذ قرار الإلغاء', 'error');
       }
@@ -306,7 +315,7 @@ export const AdminDeliveryOrders: React.FC = () => {
   const handleConfirmDirectCancel = async () => {
     if (!orderToDirectCancel) return;
     if (!canManage) {
-      showToast('عفواً، لا تملك صلاحية delivery.manage لإلغاء الطلب', 'error');
+      showToast('عفواً، لا تملك صلاحية delivery.manage أو orders.manage لإلغاء الطلب', 'error');
       return;
     }
     if (!directCancelReason.trim()) {
@@ -1107,7 +1116,8 @@ export const AdminDeliveryOrders: React.FC = () => {
               <div className="flex items-center gap-2 shrink-0">
                 {orderDetails &&
                   orderDetails.status !== 'completed' &&
-                  orderDetails.status !== 'cancelled' && (
+                  orderDetails.status !== 'cancelled' &&
+                  orderDetails.status !== 'cancellation_pending' && (
                     <button
                       type="button"
                       onClick={() => setOrderToDirectCancel(orderDetails)}

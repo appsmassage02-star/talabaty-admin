@@ -3,6 +3,7 @@ import {
   CentralDeliveryOwner,
   CentralDriverAreaCoverage,
   CentralDriverCoveragePool,
+  CentralFreeDeliveryCostBearer,
   CentralMutationResult,
   CentralRestaurantSummary,
   CentralScopeLevel,
@@ -107,15 +108,11 @@ export function getDeliveryOwnerLabelAr(owner?: string | null): string {
 export function getFreeDeliveryBearerLabelAr(bearer?: string | null): string {
   switch (bearer) {
     case 'platform':
-      return 'تتحملها المنصة';
+      return 'تتحملها المنصة (platform)';
     case 'restaurant':
-      return 'يتحملها المطعم';
-    case 'split':
-      return 'مقسمة بين المنصة والمطعم';
-    case 'none':
-      return 'بدون تحديد جهة تحمل';
+      return 'يتحملها المطعم (restaurant)';
     default:
-      return bearer ? String(bearer) : 'غير محدد';
+      return 'غير محدد';
   }
 }
 
@@ -384,18 +381,27 @@ export function validateTariffInput(
   }
 
   const restaurantId = (input.restaurant_id || '').trim() || null;
-  if (input.delivery_owner === 'restaurant') {
-    if (input.service_type !== 'ready_food') {
-      return { valid: false, error: 'التوصيل الذاتي للمطعم (restaurant) مخصص لقسم المطاعم والأكلات الجاهزة (ready_food) فقط.' };
-    }
+
+  // Enforce delivery_area_tariffs_service_restaurant_chk & delivery_area_tariffs_owner_chk:
+  // - ready_food ALWAYS requires restaurant_id for BOTH delivery_owner = 'platform' and 'restaurant'.
+  // - household_shortages & pharmacy MUST have delivery_owner = 'platform' and restaurant_id = null.
+  if (input.service_type === 'ready_food') {
     if (!restaurantId) {
-      return { valid: false, error: 'يجب تحديد المطعم عند اختيار جهة التوصيل "توصيل المطعم".' };
+      return {
+        valid: false,
+        error: 'يجب تحديد المطعم لقسم الأكلات الجاهزة (ready_food) سواء مع توصيل المنصة أو توصيل المطعم.',
+      };
     }
     if (restaurantsById && !restaurantsById.has(restaurantId)) {
       return { valid: false, error: 'المطعم المحدد غير موجود في قائمة المطاعم.' };
     }
-  } else if (restaurantId) {
-    return { valid: false, error: 'يجب عدم ربط مطعم محدد عندما تكون جهة التوصيل "توصيل المنصة".' };
+  } else {
+    if (input.delivery_owner === 'restaurant') {
+      return { valid: false, error: 'التوصيل الذاتي للمطعم (restaurant) مخصص لقسم المطاعم والأكلات الجاهزة (ready_food) فقط.' };
+    }
+    if (restaurantId) {
+      return { valid: false, error: 'يجب عدم ربط مطعم محدد مع قسم نواقص البيت أو الصيدليات (restaurant_id يجب أن يكون فارغاً).' };
+    }
   }
 
   const geoCheck = validateGeoHierarchySelection(
@@ -415,8 +421,29 @@ export function validateTariffInput(
   const baseRes = parseExplicitNonNegativeNumber(input.base_delivery_fee, 'رسوم التوصيل الأساسية');
   if (!baseRes.ok || baseRes.value === undefined) return { valid: false, error: baseRes.error };
 
-  const commRes = parseExplicitNonNegativeNumber(input.admin_commission, 'عمولة الإدارة');
-  if (!commRes.ok || commRes.value === undefined) return { valid: false, error: commRes.error };
+  // Enforce delivery_area_tariffs_owner_chk & delivery_area_tariffs_active_area_complete_chk:
+  // - When delivery_owner === 'restaurant', admin_commission MUST be numeric 0 (positive values rejected, never null).
+  let adminCommissionValue = 0;
+  if (input.delivery_owner === 'restaurant') {
+    const rawComm = input.admin_commission;
+    if (rawComm !== null && rawComm !== undefined && String(rawComm).trim() !== '') {
+      const parsedComm = Number(rawComm);
+      if (!Number.isFinite(parsedComm) || parsedComm < 0) {
+        return { valid: false, error: 'عمولة الإدارة لتوصيل المطعم يجب أن تكون 0 تلقائياً.' };
+      }
+      if (parsedComm > 0) {
+        return {
+          valid: false,
+          error: 'لا توجد عمولة إدارية على توصيل المطعم: يجب أن تكون عمولة الإدارة 0 ولا يُسمح بقيمة موجبة عند اختيار توصيل المطعم.',
+        };
+      }
+    }
+    adminCommissionValue = 0;
+  } else {
+    const commRes = parseExplicitNonNegativeNumber(input.admin_commission, 'عمولة الإدارة');
+    if (!commRes.ok || commRes.value === undefined) return { valid: false, error: commRes.error };
+    adminCommissionValue = commRes.value;
+  }
 
   let estimatedMinutes: number | null = null;
   if (
@@ -431,16 +458,35 @@ export function validateTariffInput(
     estimatedMinutes = m;
   }
 
+  // Enforce delivery_area_tariffs_free_bearer_chk:
+  // - Only 'platform' (when owner='platform') or 'restaurant' (when owner='restaurant') when is_free_delivery = true.
+  // - Strictly null when is_free_delivery = false. Never 'split' or 'none'.
   const isFree = Boolean(input.is_free_delivery);
   const rawBearer = input.free_delivery_cost_bearer ? String(input.free_delivery_cost_bearer).trim() : null;
 
+  if (rawBearer === 'split' || rawBearer === 'none') {
+    return {
+      valid: false,
+      error: 'القيم split أو none غير مدعومة في جدول التسعيرات المركزية؛ القيم المسموحة فقط platform أو restaurant عند التوصيل المجاني أو NULL عند إيقافه.',
+    };
+  }
+
+  let finalBearer: CentralFreeDeliveryCostBearer | null = null;
   if (isFree) {
-    if (!rawBearer || rawBearer === 'none') {
+    const expectedBearer: CentralFreeDeliveryCostBearer =
+      input.delivery_owner === 'restaurant' ? 'restaurant' : 'platform';
+    if (rawBearer && rawBearer !== expectedBearer) {
       return {
         valid: false,
-        error: 'عند تفعيل التوصيل المجاني (is_free_delivery) يجب تحديد الجهة المتحملة للتكلفة صراحةً.',
+        error:
+          input.delivery_owner === 'restaurant'
+            ? 'عند تفعيل التوصيل المجاني مع توصيل المطعم يجب أن تكون جهة التحمل (restaurant) فقط.'
+            : 'عند تفعيل التوصيل المجاني مع توصيل المنصة يجب أن تكون جهة التحمل (platform) فقط.',
       };
     }
+    finalBearer = expectedBearer;
+  } else {
+    finalBearer = null;
   }
 
   // Note: driver_net_fee & customer_delivery_fee are PostgreSQL GENERATED ALWAYS AS STORED columns
@@ -450,15 +496,15 @@ export function validateTariffInput(
     payload: {
       service_type: input.service_type,
       delivery_owner: input.delivery_owner,
-      restaurant_id: input.delivery_owner === 'restaurant' ? restaurantId : null,
+      restaurant_id: input.service_type === 'ready_food' ? restaurantId : null,
       scope_level: input.scope_level,
       governorate_id: geoCheck.normalized.governorate_id,
       center_id: geoCheck.normalized.center_id,
       area_id: geoCheck.normalized.area_id,
       base_delivery_fee: baseRes.value,
-      admin_commission: commRes.value,
+      admin_commission: adminCommissionValue,
       is_free_delivery: isFree,
-      free_delivery_cost_bearer: rawBearer,
+      free_delivery_cost_bearer: finalBearer,
       estimated_delivery_minutes: estimatedMinutes,
       is_enabled: Boolean(input.is_enabled),
       notes: input.notes?.trim() || null,
@@ -481,7 +527,8 @@ export function detectTariffConflicts(
   existingTariffs: DeliveryAreaTariff[]
 ): TariffConflictCheckResult {
   const conflicts: TariffConflictWarning[] = [];
-  const normRestId = candidate.restaurant_id || null;
+  const normRestId =
+    candidate.service_type === 'ready_food' ? candidate.restaurant_id || null : null;
   const normCenterId = candidate.center_id || null;
   const normAreaId = candidate.area_id || null;
 
@@ -490,11 +537,13 @@ export function detectTariffConflicts(
     if (row.service_type !== candidate.service_type) continue;
     if (row.governorate_id !== candidate.governorate_id) continue;
 
-    const rowRestId = row.restaurant_id || null;
+    const rowRestId = row.service_type === 'ready_food' ? row.restaurant_id || null : null;
     const rowCenterId = row.center_id || null;
     const rowAreaId = row.area_id || null;
+    const restLabel = row.restaurant_name ? ` للمطعم "${row.restaurant_name}"` : '';
 
     // Exact matching record conflict (blocking regardless of enabled status so duplicate scope records are never created)
+    // Note: For ready_food, restaurant_id is part of identity for BOTH platform & restaurant owners.
     if (
       row.delivery_owner === candidate.delivery_owner &&
       rowRestId === normRestId &&
@@ -505,15 +554,16 @@ export function detectTariffConflicts(
       conflicts.push({
         kind: 'exact_duplicate',
         severity: 'blocking',
-        message: `يوجد بالفعل سجل تسعيرة مطابق لنفس القسم والجهة والمستوى والنطاق الجغرافي (${row.is_enabled ? 'مفعّل' : 'معطّل'}). عدّل السجل القائم بدل التكرار.`,
+        message: `يوجد بالفعل سجل تسعيرة مطابق${restLabel} لنفس القسم والجهة والمستوى والنطاق الجغرافي (${row.is_enabled ? 'مفعّل' : 'معطّل'}). عدّل السجل القائم بدل التكرار.`,
         conflictingTariff: row,
       });
       continue;
     }
 
-    // Cross-owner overlap for the same scope in ready_food
+    // Cross-owner overlap for the SAME restaurant in ready_food (never warn across different restaurants)
     if (
       row.delivery_owner !== candidate.delivery_owner &&
+      (candidate.service_type !== 'ready_food' || rowRestId === normRestId) &&
       row.scope_level === candidate.scope_level &&
       rowCenterId === normCenterId &&
       rowAreaId === normAreaId
@@ -521,12 +571,12 @@ export function detectTariffConflicts(
       conflicts.push({
         kind: 'cross_owner_exists',
         severity: 'warning',
-        message: `يوجد تسعيرة أخرى لنفس النطاق الجغرافي تابعة لـ "${getDeliveryOwnerLabelAr(row.delivery_owner)}" (${row.is_enabled ? 'مفعّلة' : 'معطّلة'}).`,
+        message: `يوجد تسعيرة أخرى${restLabel} لنفس النطاق الجغرافي تابعة لـ "${getDeliveryOwnerLabelAr(row.delivery_owner)}" (${row.is_enabled ? 'مفعّلة' : 'معطّلة'}).`,
         conflictingTariff: row,
       });
     }
 
-    // Hierarchical parent/child overlap warnings for active tariffs of the same owner
+    // Hierarchical parent/child overlap warnings for active tariffs of the same owner & restaurant
     if (row.delivery_owner === candidate.delivery_owner && rowRestId === normRestId && row.is_enabled) {
       if (candidate.scope_level === 'area') {
         const isParentCenter = row.scope_level === 'center' && rowCenterId === normCenterId && !rowAreaId;
@@ -732,13 +782,27 @@ export function resolveEffectiveTariff(
       : 'تنبيه تناسق: هذا النطاق غير مفعّل حالياً في جدول restaurant_section_service_areas (تغطية قسم المطاعم).';
   }
 
-  const targetRestId = query.delivery_owner === 'restaurant' ? query.restaurant_id || null : null;
+  if (query.service_type === 'ready_food' && !query.restaurant_id) {
+    return {
+      isServiced: false,
+      unavailableReason: 'يجب اختيار المطعم المحدد لحساب التعريفة الفعالة لقسم الأكلات الجاهزة (ready_food).',
+      matchedTariff: null,
+      candidateTariffs: [],
+      trace: [...trace, 'توقف: لم يتم تحديد restaurant_id لقسم ready_food.'],
+      sectionAreaMatchNote,
+    };
+  }
+
+  const targetRestId = query.service_type === 'ready_food' ? query.restaurant_id || null : null;
 
   const candidates = allTariffs.filter((t) => {
     if (t.service_type !== query.service_type) return false;
     if (t.delivery_owner !== query.delivery_owner) return false;
-    if (query.delivery_owner === 'restaurant' && (t.restaurant_id || null) !== targetRestId) return false;
-    if (query.delivery_owner === 'platform' && t.restaurant_id) return false;
+    if (query.service_type === 'ready_food') {
+      if ((t.restaurant_id || null) !== targetRestId) return false;
+    } else {
+      if (t.restaurant_id) return false;
+    }
     if (t.governorate_id !== query.governorate_id) return false;
 
     if (t.scope_level === 'area') {

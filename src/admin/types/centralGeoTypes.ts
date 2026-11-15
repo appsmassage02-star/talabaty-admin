@@ -10,7 +10,7 @@ export type CentralDeliveryOwner = 'platform' | 'restaurant';
 
 export type CentralScopeLevel = 'governorate' | 'center' | 'area';
 
-export type CentralFreeDeliveryCostBearer = 'platform' | 'restaurant' | 'split' | 'none' | string;
+export type CentralFreeDeliveryCostBearer = 'platform' | 'restaurant';
 
 export type CentralDriverCoveragePool = 'platform' | 'restaurant';
 
