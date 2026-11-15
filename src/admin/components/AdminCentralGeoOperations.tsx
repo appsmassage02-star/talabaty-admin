@@ -7,12 +7,14 @@ import {
   CentralSectionServiceAreaRecord,
   CentralServiceType,
   DeliveryAreaTariff,
+  DeliveryAreaTariffBatchInput,
   DeliveryAreaTariffInput,
   DeliveryDriver,
   DriverCoverageMutationInput,
   GeoArea,
   GeoCenter,
   GeoGovernorate,
+  TariffAreaConflictDetail,
 } from '../types';
 import {
   GeoLookups,
@@ -181,7 +183,7 @@ export const AdminCentralGeoOperations: React.FC = () => {
   // Handlers
   const handleSaveTariff = async (
     input: DeliveryAreaTariffInput
-  ): Promise<{ success: boolean; error?: string }> => {
+  ): Promise<{ success: boolean; data?: DeliveryAreaTariff; error?: string }> => {
     if (!canManagePricing) {
       return { success: false, error: 'ليس لديك صلاحية إدارة التسعير (central_pricing.manage).' };
     }
@@ -201,19 +203,69 @@ export const AdminCentralGeoOperations: React.FC = () => {
         restaurantsById
       );
 
-      if (!res.success) {
+      if (!res.success || !res.data) {
         showToast(res.error || 'فشل حفظ التسعيرة', 'error');
         return { success: false, error: res.error };
       }
 
       showToast(
-        input.id
-          ? 'تم تحديث التسعيرة والتحقق من حفظها في قاعدة البيانات'
-          : 'تمت إضافة التسعيرة والتحقق من حفظها في قاعدة البيانات',
+        `${input.id ? 'تم تحديث التسعيرة' : 'تمت إضافة التسعيرة'} — قيم قاعدة البيانات: صافي المندوب ${res.data.driver_net_fee} ج.م | رسوم العميل ${res.data.customer_delivery_fee} ج.م`,
         'success'
       );
       await loadAllCentralData();
-      return { success: true };
+      return { success: true, data: res.data };
+    } finally {
+      setIsMutating(false);
+    }
+  };
+
+  const handleSaveTariffBatch = async (
+    input: DeliveryAreaTariffBatchInput
+  ): Promise<{
+    success: boolean;
+    data?: DeliveryAreaTariff[];
+    error?: string;
+    areaConflicts?: TariffAreaConflictDetail[];
+  }> => {
+    if (!canManagePricing) {
+      return { success: false, error: 'ليس لديك صلاحية إدارة التسعير (central_pricing.manage).' };
+    }
+    setIsMutating(true);
+    try {
+      const uniqueAreaIds = Array.from(new Set(input.area_ids.map((id) => id.trim()).filter(Boolean)));
+      let effectiveLookups = baseLookups;
+      if (uniqueAreaIds.length > 0) {
+        const areaRes = await centralGeoDeliveryService.getGeoAreasByIds(uniqueAreaIds);
+        if (areaRes.error) {
+          showToast(areaRes.error, 'error');
+          return { success: false, error: areaRes.error };
+        }
+        effectiveLookups = buildGeoLookups(governorates, centers, areaRes.areas);
+      }
+
+      const res = await centralGeoDeliveryService.saveDeliveryAreaTariffsBatch(
+        input,
+        tariffs,
+        effectiveLookups,
+        restaurantsById
+      );
+
+      if (!res.success || !res.data) {
+        showToast(res.error || 'فشل حفظ التسعيرة للمناطق المختارة', 'error');
+        return {
+          success: false,
+          error: res.error,
+          areaConflicts: res.areaConflicts,
+        };
+      }
+
+      const sample = res.data[0];
+      showToast(
+        `تم حفظ ${res.data.length} تسعيرة والتحقق منها من قاعدة البيانات — صافي المندوب ${sample.driver_net_fee} ج.م | رسوم العميل ${sample.customer_delivery_fee} ج.م`,
+        'success'
+      );
+      await loadAllCentralData();
+      return { success: true, data: res.data };
     } finally {
       setIsMutating(false);
     }
@@ -559,6 +611,7 @@ export const AdminCentralGeoOperations: React.FC = () => {
           canManagePricing={canManagePricing}
           isBusy={isLoading || isMutating}
           onSaveTariff={handleSaveTariff}
+          onSaveTariffBatch={handleSaveTariffBatch}
           onToggleTariff={handleToggleTariffEnabled}
           onDeleteTariff={handleRequestDeleteTariff}
           onRefresh={loadAllCentralData}

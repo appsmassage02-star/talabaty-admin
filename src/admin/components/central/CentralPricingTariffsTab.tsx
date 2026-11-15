@@ -6,20 +6,24 @@ import {
   CentralSectionServiceAreaRecord,
   CentralServiceType,
   DeliveryAreaTariff,
+  DeliveryAreaTariffBatchInput,
   DeliveryAreaTariffInput,
   GeoArea,
   GeoCenter,
   GeoGovernorate,
+  TariffAreaConflictDetail,
 } from '../../types';
 import {
   CENTRAL_SERVICE_DEFINITIONS,
   GeoLookups,
   centralGeoDeliveryService,
+  detectBatchTariffConflicts,
   detectTariffConflicts,
   getDeliveryOwnerLabelAr,
   getFreeDeliveryBearerLabelAr,
   getScopeLevelLabelAr,
   getServiceLabelAr,
+  previewGeneratedTariffValues,
   resolveEffectiveTariff,
   validateTariffInput,
 } from '../../services/centralGeoDeliveryService';
@@ -27,14 +31,17 @@ import {
   AlertTriangle,
   Calculator,
   CheckCircle2,
+  CheckSquare,
   Coins,
   Edit2,
   Gift,
+  Lock,
   Plus,
   Power,
   RefreshCw,
   Search,
   ShieldAlert,
+  Square,
   Trash2,
   X,
   XCircle,
@@ -53,7 +60,13 @@ interface CentralPricingTariffsTabProps {
   tariffsConstraintHint?: string | null;
   canManagePricing: boolean;
   isBusy: boolean;
-  onSaveTariff: (input: DeliveryAreaTariffInput) => Promise<{ success: boolean; error?: string }>;
+  onSaveTariff: (input: DeliveryAreaTariffInput) => Promise<{ success: boolean; data?: DeliveryAreaTariff; error?: string }>;
+  onSaveTariffBatch: (input: DeliveryAreaTariffBatchInput) => Promise<{
+    success: boolean;
+    data?: DeliveryAreaTariff[];
+    error?: string;
+    areaConflicts?: TariffAreaConflictDetail[];
+  }>;
   onToggleTariff: (tariff: DeliveryAreaTariff, nextEnabled: boolean) => Promise<void>;
   onDeleteTariff: (tariff: DeliveryAreaTariff) => Promise<void>;
   onRefresh: () => void;
@@ -73,6 +86,7 @@ export const CentralPricingTariffsTab: React.FC<CentralPricingTariffsTabProps> =
   canManagePricing,
   isBusy,
   onSaveTariff,
+  onSaveTariffBatch,
   onToggleTariff,
   onDeleteTariff,
   onRefresh,
@@ -107,6 +121,7 @@ export const CentralPricingTariffsTab: React.FC<CentralPricingTariffsTabProps> =
   // Add / Edit Modal State (ZERO hardcoded fee or governorate defaults!)
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | undefined>(undefined);
+  const [editingTariff, setEditingTariff] = useState<DeliveryAreaTariff | null>(null);
   const [formService, setFormService] = useState<CentralServiceType>('household_shortages');
   const [formOwner, setFormOwner] = useState<CentralDeliveryOwner>('platform');
   const [formRestaurantId, setFormRestaurantId] = useState<string>('');
@@ -114,10 +129,10 @@ export const CentralPricingTariffsTab: React.FC<CentralPricingTariffsTabProps> =
   const [formGovId, setFormGovId] = useState<string>('');
   const [formCenterId, setFormCenterId] = useState<string>('');
   const [formAreaId, setFormAreaId] = useState<string>('');
+  const [formAreaIds, setFormAreaIds] = useState<string[]>([]);
+  const [areaPickerSearch, setAreaPickerSearch] = useState<string>('');
   const [formBaseFee, setFormBaseFee] = useState<string>('');
   const [formAdminComm, setFormAdminComm] = useState<string>('');
-  const [formDriverNet, setFormDriverNet] = useState<string>('');
-  const [formCustomerFee, setFormCustomerFee] = useState<string>('');
   const [formIsFree, setFormIsFree] = useState<boolean>(false);
   const [formBearer, setFormBearer] = useState<string>('');
   const [formMinutes, setFormMinutes] = useState<string>('');
@@ -127,6 +142,12 @@ export const CentralPricingTariffsTab: React.FC<CentralPricingTariffsTabProps> =
   const [isLoadingModalAreas, setIsLoadingModalAreas] = useState(false);
   const [modalSubmitError, setModalSubmitError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [lastSavedDbSummary, setLastSavedDbSummary] = useState<{
+    count: number;
+    isEdit: boolean;
+    driverNetFee: number;
+    customerDeliveryFee: number;
+  } | null>(null);
 
   // Active geo lists (strictly exclude inactive records from available selection)
   const activeGovernorates = useMemo(() => governorates.filter((g) => g.is_active), [governorates]);
@@ -255,9 +276,51 @@ export const CentralPricingTariffsTab: React.FC<CentralPricingTariffsTabProps> =
     searchQuery,
   ]);
 
-  // Live conflict check BEFORE saving inside Modal
+  const filteredModalAreas = useMemo(() => {
+    const q = areaPickerSearch.trim().toLowerCase();
+    if (!q) return modalCenterAreas;
+    return modalCenterAreas.filter(
+      (a) =>
+        a.name_ar.toLowerCase().includes(q) ||
+        (a.name_en || '').toLowerCase().includes(q)
+    );
+  }, [modalCenterAreas, areaPickerSearch]);
+
+  const existingAreaIdsForContext = useMemo(() => {
+    const set = new Set<string>();
+    if (!formGovId || !formCenterId) return set;
+    const normRestId = formOwner === 'restaurant' ? formRestaurantId || null : null;
+    for (const t of tariffs) {
+      if (
+        t.scope_level === 'area' &&
+        t.area_id &&
+        t.service_type === formService &&
+        t.delivery_owner === formOwner &&
+        (t.restaurant_id || null) === normRestId &&
+        t.governorate_id === formGovId &&
+        t.center_id === formCenterId
+      ) {
+        set.add(t.area_id);
+      }
+    }
+    return set;
+  }, [tariffs, formService, formOwner, formRestaurantId, formGovId, formCenterId]);
+
+  const generatedPreview = useMemo(
+    () =>
+      previewGeneratedTariffValues({
+        base_delivery_fee: formBaseFee,
+        admin_commission: formAdminComm,
+        delivery_owner: formOwner,
+        is_free_delivery: formIsFree,
+      }),
+    [formBaseFee, formAdminComm, formOwner, formIsFree]
+  );
+
+  // Live conflict check BEFORE saving inside Modal (single or batch)
   const liveModalConflicts = useMemo(() => {
     if (!isModalOpen || !formGovId) return null;
+    if (!editingId && formScope === 'area') return null;
     if (formScope === 'center' && !formCenterId) return null;
     if (formScope === 'area' && (!formCenterId || !formAreaId)) return null;
     return detectTariffConflicts(
@@ -287,6 +350,42 @@ export const CentralPricingTariffsTab: React.FC<CentralPricingTariffsTabProps> =
     formIsEnabled,
     tariffs,
   ]);
+
+  const liveBatchConflicts = useMemo(() => {
+    if (!isModalOpen || editingId || formScope !== 'area' || !formGovId || !formCenterId || formAreaIds.length === 0) {
+      return null;
+    }
+    return detectBatchTariffConflicts(
+      {
+        service_type: formService,
+        delivery_owner: formOwner,
+        restaurant_id: formOwner === 'restaurant' ? formRestaurantId || null : null,
+        governorate_id: formGovId,
+        center_id: formCenterId,
+        area_ids: formAreaIds,
+        is_enabled: formIsEnabled,
+      },
+      tariffs,
+      modalLookups
+    );
+  }, [
+    isModalOpen,
+    editingId,
+    formScope,
+    formService,
+    formOwner,
+    formRestaurantId,
+    formGovId,
+    formCenterId,
+    formAreaIds,
+    formIsEnabled,
+    tariffs,
+    modalLookups,
+  ]);
+
+  const hasAnyModalBlockingConflict = Boolean(
+    liveModalConflicts?.hasBlockingConflict || liveBatchConflicts?.hasBlockingConflict
+  );
 
   const effectivePreview = useMemo(() => {
     if (!showSimulator || !simGovId) return null;
@@ -318,6 +417,7 @@ export const CentralPricingTariffsTab: React.FC<CentralPricingTariffsTabProps> =
 
   const openCreateModal = () => {
     setEditingId(undefined);
+    setEditingTariff(null);
     setFormService((filterService as CentralServiceType) || 'household_shortages');
     setFormOwner('platform');
     setFormRestaurantId('');
@@ -325,10 +425,10 @@ export const CentralPricingTariffsTab: React.FC<CentralPricingTariffsTabProps> =
     setFormGovId('');
     setFormCenterId('');
     setFormAreaId('');
+    setFormAreaIds([]);
+    setAreaPickerSearch('');
     setFormBaseFee('');
     setFormAdminComm('');
-    setFormDriverNet('');
-    setFormCustomerFee('');
     setFormIsFree(false);
     setFormBearer('');
     setFormMinutes('');
@@ -340,6 +440,7 @@ export const CentralPricingTariffsTab: React.FC<CentralPricingTariffsTabProps> =
 
   const openEditModal = (t: DeliveryAreaTariff) => {
     setEditingId(t.id);
+    setEditingTariff(t);
     setFormService(t.service_type);
     setFormOwner(t.delivery_owner);
     setFormRestaurantId(t.restaurant_id || '');
@@ -347,10 +448,10 @@ export const CentralPricingTariffsTab: React.FC<CentralPricingTariffsTabProps> =
     setFormGovId(t.governorate_id);
     setFormCenterId(t.center_id || '');
     setFormAreaId(t.area_id || '');
+    setFormAreaIds(t.area_id ? [t.area_id] : []);
+    setAreaPickerSearch('');
     setFormBaseFee(String(t.base_delivery_fee));
     setFormAdminComm(String(t.admin_commission));
-    setFormDriverNet(String(t.driver_net_fee));
-    setFormCustomerFee(String(t.customer_delivery_fee));
     setFormIsFree(Boolean(t.is_free_delivery));
     setFormBearer(t.free_delivery_cost_bearer || '');
     setFormMinutes(
@@ -364,10 +465,106 @@ export const CentralPricingTariffsTab: React.FC<CentralPricingTariffsTabProps> =
     setIsModalOpen(true);
   };
 
+  const toggleAreaSelection = (areaId: string) => {
+    setFormAreaIds((prev) =>
+      prev.includes(areaId) ? prev.filter((id) => id !== areaId) : [...prev, areaId]
+    );
+  };
+
+  const selectAllFilteredAreas = () => {
+    const filteredIds = filteredModalAreas.map((a) => a.id);
+    setFormAreaIds((prev) => Array.from(new Set([...prev, ...filteredIds])));
+  };
+
+  const clearSelectedAreas = () => {
+    setFormAreaIds([]);
+  };
+
   const handleModalSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setModalSubmitError(null);
 
+    // Create mode on 'area' scope supports multi-area batch creation (1 or many areas atomically)
+    if (!editingId && formScope === 'area') {
+      const uniqueAreaIds: string[] = Array.from(
+        new Set<string>(formAreaIds.map((id) => id.trim()).filter(Boolean))
+      );
+      if (uniqueAreaIds.length === 0) {
+        setModalSubmitError('يجب اختيار منطقة واحدة على الأقل لإضافة التسعيرة.');
+        return;
+      }
+
+      const preCheck = validateTariffInput(
+        {
+          service_type: formService,
+          delivery_owner: formOwner,
+          restaurant_id: formOwner === 'restaurant' ? formRestaurantId || null : null,
+          scope_level: 'area',
+          governorate_id: formGovId,
+          center_id: formCenterId || null,
+          area_id: uniqueAreaIds[0],
+          base_delivery_fee: formBaseFee,
+          admin_commission: formAdminComm,
+          is_free_delivery: formIsFree,
+          free_delivery_cost_bearer: formBearer || null,
+          estimated_delivery_minutes: formMinutes || null,
+          is_enabled: formIsEnabled,
+          notes: formNotes,
+        },
+        modalLookups,
+        restaurantsById
+      );
+      if (!preCheck.valid) {
+        setModalSubmitError(preCheck.error || 'يرجى التحقق من المدخلات');
+        return;
+      }
+
+      if (liveBatchConflicts?.hasBlockingConflict) {
+        const lines = liveBatchConflicts.blockingDetails.map(
+          (d) => `• ${d.areaName}: ${d.message}`
+        );
+        setModalSubmitError(`تعذر الحفظ لوجود تكرار في المناطق التالية:\n${lines.join('\n')}`);
+        return;
+      }
+
+      const batchInput: DeliveryAreaTariffBatchInput = {
+        service_type: formService,
+        delivery_owner: formOwner,
+        restaurant_id: formOwner === 'restaurant' ? formRestaurantId || null : null,
+        scope_level: 'area',
+        governorate_id: formGovId,
+        center_id: formCenterId,
+        area_ids: uniqueAreaIds,
+        base_delivery_fee: formBaseFee,
+        admin_commission: formAdminComm,
+        is_free_delivery: formIsFree,
+        free_delivery_cost_bearer: formBearer || null,
+        estimated_delivery_minutes: formMinutes || null,
+        is_enabled: formIsEnabled,
+        notes: formNotes,
+      };
+
+      setIsSubmitting(true);
+      try {
+        const res = await onSaveTariffBatch(batchInput);
+        if (res.success && res.data && res.data.length > 0) {
+          setLastSavedDbSummary({
+            count: res.data.length,
+            isEdit: false,
+            driverNetFee: Number(res.data[0].driver_net_fee),
+            customerDeliveryFee: Number(res.data[0].customer_delivery_fee),
+          });
+          setIsModalOpen(false);
+        } else {
+          setModalSubmitError(res.error || 'تعذر حفظ التسعيرة للمناطق المختارة في قاعدة البيانات.');
+        }
+      } finally {
+        setIsSubmitting(false);
+      }
+      return;
+    }
+
+    // Single create (governorate / center) or Edit existing row
     const input: DeliveryAreaTariffInput = {
       id: editingId,
       service_type: formService,
@@ -379,8 +576,6 @@ export const CentralPricingTariffsTab: React.FC<CentralPricingTariffsTabProps> =
       area_id: formScope === 'area' ? formAreaId || null : null,
       base_delivery_fee: formBaseFee,
       admin_commission: formAdminComm,
-      driver_net_fee: formDriverNet,
-      customer_delivery_fee: formCustomerFee,
       is_free_delivery: formIsFree,
       free_delivery_cost_bearer: formBearer || null,
       estimated_delivery_minutes: formMinutes || null,
@@ -404,6 +599,14 @@ export const CentralPricingTariffsTab: React.FC<CentralPricingTariffsTabProps> =
     try {
       const res = await onSaveTariff(input);
       if (res.success) {
+        if (res.data) {
+          setLastSavedDbSummary({
+            count: 1,
+            isEdit: Boolean(editingId),
+            driverNetFee: Number(res.data.driver_net_fee),
+            customerDeliveryFee: Number(res.data.customer_delivery_fee),
+          });
+        }
         setIsModalOpen(false);
       } else {
         setModalSubmitError(res.error || 'تعذر حفظ التسعيرة في قاعدة البيانات.');
@@ -467,6 +670,36 @@ export const CentralPricingTariffsTab: React.FC<CentralPricingTariffsTabProps> =
           )}
         </div>
       </div>
+
+      {/* DB Read-After-Write Calculated Confirmation Banner */}
+      {lastSavedDbSummary && (
+        <div className="bg-emerald-950/60 border border-emerald-500/40 rounded-2xl p-4 flex items-center justify-between gap-3 text-xs">
+          <div className="flex items-start gap-2.5 text-emerald-200">
+            <CheckCircle2 className="w-5 h-5 shrink-0 mt-0.5 text-emerald-400" />
+            <div>
+              <p className="font-bold text-emerald-300">
+                {lastSavedDbSummary.isEdit
+                  ? 'تم تحديث التسعيرة وإعادة قراءة القيم المحسوبة من قاعدة البيانات'
+                  : `تم حفظ ${lastSavedDbSummary.count} تسعيرة وإعادة قراءة القيم المحسوبة من قاعدة البيانات`}
+              </p>
+              <p className="text-[11px] text-emerald-100/90 mt-1 font-mono">
+                صافي مستحق المندوب (driver_net_fee):{' '}
+                <strong className="text-sky-300">{lastSavedDbSummary.driverNetFee} ج.م</strong>
+                {'  |  '}
+                رسوم العميل (customer_delivery_fee):{' '}
+                <strong className="text-emerald-300">{lastSavedDbSummary.customerDeliveryFee} ج.م</strong>
+              </p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => setLastSavedDbSummary(null)}
+            className="p-1 rounded-lg bg-slate-900/60 text-emerald-300 hover:text-white cursor-pointer"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
 
       {/* Real DB Constraint / RLS Error Banner */}
       {tariffsError && (
@@ -939,7 +1172,7 @@ export const CentralPricingTariffsTab: React.FC<CentralPricingTariffsTabProps> =
                 {modalSubmitError && (
                   <div className="bg-rose-950/70 border border-rose-500/40 rounded-2xl p-3.5 text-rose-200 flex items-start gap-2">
                     <ShieldAlert className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
-                    <span className="break-words leading-relaxed">{modalSubmitError}</span>
+                    <span className="break-words leading-relaxed whitespace-pre-line">{modalSubmitError}</span>
                   </div>
                 )}
 
@@ -960,6 +1193,40 @@ export const CentralPricingTariffsTab: React.FC<CentralPricingTariffsTabProps> =
                     ))}
                   </div>
                 )}
+
+                {liveBatchConflicts &&
+                  (liveBatchConflicts.blockingDetails.length > 0 ||
+                    liveBatchConflicts.warningDetails.length > 0) && (
+                    <div className="space-y-1.5">
+                      {liveBatchConflicts.blockingDetails.map((d, idx) => (
+                        <div
+                          key={`blk-${d.areaId}-${idx}`}
+                          className="p-3 rounded-2xl border bg-rose-950/60 border-rose-500/40 text-rose-200 flex items-start gap-2"
+                        >
+                          <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5 text-rose-400" />
+                          <span>
+                            <strong className="text-rose-100">[{d.areaName}]</strong> {d.message}
+                          </span>
+                        </div>
+                      ))}
+                      {liveBatchConflicts.warningDetails.slice(0, 4).map((d, idx) => (
+                        <div
+                          key={`wrn-${d.areaId}-${idx}`}
+                          className="p-3 rounded-2xl border bg-amber-950/50 border-amber-500/40 text-amber-200 flex items-start gap-2"
+                        >
+                          <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5 text-amber-400" />
+                          <span>
+                            <strong className="text-amber-100">[{d.areaName}]</strong> {d.message}
+                          </span>
+                        </div>
+                      ))}
+                      {liveBatchConflicts.warningDetails.length > 4 && (
+                        <p className="text-[11px] text-amber-300 px-1">
+                          + {liveBatchConflicts.warningDetails.length - 4} تنبيهات هرمية أخرى على بقية المناطق المختارة.
+                        </p>
+                      )}
+                    </div>
+                  )}
 
                 {/* Service & Owner */}
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
@@ -1013,8 +1280,10 @@ export const CentralPricingTariffsTab: React.FC<CentralPricingTariffsTabProps> =
                         if (next === 'governorate') {
                           setFormCenterId('');
                           setFormAreaId('');
+                          setFormAreaIds([]);
                         } else if (next === 'center') {
                           setFormAreaId('');
+                          setFormAreaIds([]);
                         }
                       }}
                       className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2.5 text-white"
@@ -1046,52 +1315,59 @@ export const CentralPricingTariffsTab: React.FC<CentralPricingTariffsTabProps> =
                 )}
 
                 {/* Geo Hierarchy Selection (Strictly geo_*) */}
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 p-3.5 rounded-2xl bg-slate-950/60 border border-slate-800">
-                  <div>
-                    <label className="block font-bold text-slate-300 mb-1">المحافظة (geo_governorates) *</label>
-                    <select
-                      required
-                      value={formGovId}
-                      onChange={(e) => {
-                        setFormGovId(e.target.value);
-                        setFormCenterId('');
-                        setFormAreaId('');
-                      }}
-                      className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-white"
-                    >
-                      <option value="">اختر المحافظة...</option>
-                      {activeGovernorates.map((g) => (
-                        <option key={g.id} value={g.id}>
-                          {g.name_ar}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-
-                  {formScope !== 'governorate' && (
+                <div className="space-y-3 p-3.5 rounded-2xl bg-slate-950/60 border border-slate-800">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                     <div>
-                      <label className="block font-bold text-slate-300 mb-1">المركز / القسم (geo_centers) *</label>
+                      <label className="block font-bold text-slate-300 mb-1">المحافظة (geo_governorates) *</label>
                       <select
                         required
-                        disabled={!formGovId}
-                        value={formCenterId}
+                        value={formGovId}
                         onChange={(e) => {
-                          setFormCenterId(e.target.value);
+                          setFormGovId(e.target.value);
+                          setFormCenterId('');
                           setFormAreaId('');
+                          setFormAreaIds([]);
+                          setAreaPickerSearch('');
                         }}
-                        className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-white disabled:opacity-40"
+                        className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-white"
                       >
-                        <option value="">اختر المركز...</option>
-                        {modalCenters.map((c) => (
-                          <option key={c.id} value={c.id}>
-                            {c.name_ar}
+                        <option value="">اختر المحافظة...</option>
+                        {activeGovernorates.map((g) => (
+                          <option key={g.id} value={g.id}>
+                            {g.name_ar}
                           </option>
                         ))}
                       </select>
                     </div>
-                  )}
 
-                  {formScope === 'area' && (
+                    {formScope !== 'governorate' && (
+                      <div>
+                        <label className="block font-bold text-slate-300 mb-1">المركز / القسم (geo_centers) *</label>
+                        <select
+                          required
+                          disabled={!formGovId}
+                          value={formCenterId}
+                          onChange={(e) => {
+                            setFormCenterId(e.target.value);
+                            setFormAreaId('');
+                            setFormAreaIds([]);
+                            setAreaPickerSearch('');
+                          }}
+                          className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-white disabled:opacity-40"
+                        >
+                          <option value="">اختر المركز...</option>
+                          {modalCenters.map((c) => (
+                            <option key={c.id} value={c.id}>
+                              {c.name_ar}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Single-area select in Edit mode */}
+                  {formScope === 'area' && editingId && (
                     <div>
                       <label className="block font-bold text-slate-300 mb-1">
                         المنطقة (geo_areas) * {isLoadingModalAreas ? '⏳' : ''}
@@ -1112,10 +1388,137 @@ export const CentralPricingTariffsTab: React.FC<CentralPricingTariffsTabProps> =
                       </select>
                     </div>
                   )}
+
+                  {/* Multi-area selector in Create mode */}
+                  {formScope === 'area' && !editingId && (
+                    <div className="space-y-2.5 pt-1">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <label className="font-bold text-slate-300">
+                          المناطق المفعلة ضمن المركز (geo_areas) * — يمكنك اختيار منطقة واحدة أو عدة مناطق
+                          {isLoadingModalAreas ? ' ⏳' : ''}
+                        </label>
+                        {formCenterId && modalCenterAreas.length > 0 && (
+                          <div className="flex items-center gap-1.5">
+                            <button
+                              type="button"
+                              onClick={selectAllFilteredAreas}
+                              className="px-2.5 py-1 rounded-lg bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/30 text-emerald-300 font-bold text-[11px] cursor-pointer"
+                            >
+                              تحديد الكل ({filteredModalAreas.length})
+                            </button>
+                            <button
+                              type="button"
+                              onClick={clearSelectedAreas}
+                              disabled={formAreaIds.length === 0}
+                              className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 disabled:opacity-40 border border-slate-700 text-slate-300 font-bold text-[11px] cursor-pointer"
+                            >
+                              إلغاء التحديد
+                            </button>
+                          </div>
+                        )}
+                      </div>
+
+                      {!formCenterId ? (
+                        <div className="p-3 rounded-xl bg-slate-900/70 border border-slate-800 text-slate-400 text-[11px]">
+                          اختر المحافظة ثم المركز لعرض المناطق المفعلة التابعة له.
+                        </div>
+                      ) : isLoadingModalAreas ? (
+                        <div className="p-3 rounded-xl bg-slate-900/70 border border-slate-800 text-slate-400 text-[11px]">
+                          جاري تحميل المناطق المفعلة من جدول geo_areas...
+                        </div>
+                      ) : modalCenterAreas.length === 0 ? (
+                        <div className="p-3 rounded-xl bg-amber-950/40 border border-amber-500/30 text-amber-200 text-[11px]">
+                          لا توجد مناطق مفعلة (is_active = true) تابعة لهذا المركز.
+                        </div>
+                      ) : (
+                        <>
+                          <div className="relative">
+                            <Search className="w-3.5 h-3.5 text-slate-500 absolute right-3 top-1/2 -translate-y-1/2" />
+                            <input
+                              type="text"
+                              value={areaPickerSearch}
+                              onChange={(e) => setAreaPickerSearch(e.target.value)}
+                              placeholder="ابحث داخل مناطق المركز المختار..."
+                              className="w-full bg-slate-900 border border-slate-800 rounded-xl pr-9 pl-3 py-2 text-white text-[11px]"
+                            />
+                          </div>
+
+                          <div className="max-h-44 overflow-y-auto grid grid-cols-1 sm:grid-cols-2 gap-1.5 p-2 rounded-xl bg-slate-900/80 border border-slate-800">
+                            {filteredModalAreas.map((a) => {
+                              const checked = formAreaIds.includes(a.id);
+                              const alreadyHasTariff = existingAreaIdsForContext.has(a.id);
+                              return (
+                                <button
+                                  key={a.id}
+                                  type="button"
+                                  onClick={() => toggleAreaSelection(a.id)}
+                                  className={`flex items-center justify-between gap-2 px-2.5 py-2 rounded-lg border text-right transition-colors cursor-pointer ${
+                                    checked
+                                      ? alreadyHasTariff
+                                        ? 'bg-rose-500/15 border-rose-500/40 text-rose-200'
+                                        : 'bg-emerald-500/15 border-emerald-500/40 text-emerald-200'
+                                      : 'bg-slate-950/60 border-slate-800 text-slate-300 hover:border-slate-700'
+                                  }`}
+                                >
+                                  <span className="flex items-center gap-2 min-w-0">
+                                    {checked ? (
+                                      <CheckSquare className="w-4 h-4 shrink-0 text-emerald-400" />
+                                    ) : (
+                                      <Square className="w-4 h-4 shrink-0 text-slate-500" />
+                                    )}
+                                    <span className="truncate font-bold">{a.name_ar}</span>
+                                  </span>
+                                  {alreadyHasTariff && (
+                                    <span className="shrink-0 text-[10px] px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300 border border-amber-500/30">
+                                      مسعّرة مسبقاً
+                                    </span>
+                                  )}
+                                </button>
+                              );
+                            })}
+                          </div>
+
+                          {formAreaIds.length > 0 && (
+                            <div className="p-2.5 rounded-xl bg-slate-900/90 border border-emerald-500/25 space-y-1.5">
+                              <p className="text-[11px] font-bold text-emerald-300">
+                                المناطق المختارة ({formAreaIds.length}):
+                              </p>
+                              <div className="flex flex-wrap gap-1.5">
+                                {formAreaIds.map((id) => {
+                                  const areaName = modalLookups.areasById.get(id)?.name_ar || id;
+                                  const isDup = existingAreaIdsForContext.has(id);
+                                  return (
+                                    <span
+                                      key={id}
+                                      className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-[11px] font-bold border ${
+                                        isDup
+                                          ? 'bg-rose-500/15 text-rose-200 border-rose-500/40'
+                                          : 'bg-emerald-500/15 text-emerald-200 border-emerald-500/30'
+                                      }`}
+                                    >
+                                      <span>{areaName}</span>
+                                      <button
+                                        type="button"
+                                        onClick={() => toggleAreaSelection(id)}
+                                        className="hover:text-white cursor-pointer"
+                                        aria-label={`إزالة ${areaName}`}
+                                      >
+                                        <X className="w-3 h-3" />
+                                      </button>
+                                    </span>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          )}
+                        </>
+                      )}
+                    </div>
+                  )}
                 </div>
 
-                {/* Explicit Independent Fee Inputs (Zero hardcoded defaults) */}
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                {/* Writable Fee Inputs (Zero hardcoded defaults) */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <div>
                     <label className="block font-bold text-slate-300 mb-1">رسوم التوصيل الأساسية *</label>
                     <input
@@ -1142,32 +1545,72 @@ export const CentralPricingTariffsTab: React.FC<CentralPricingTariffsTabProps> =
                       className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2.5 text-white font-mono"
                     />
                   </div>
-                  <div>
-                    <label className="block font-bold text-slate-300 mb-1">صافي المندوب *</label>
-                    <input
-                      type="number"
-                      step="0.01"
-                      min="0"
-                      required
-                      placeholder="أدخل القيمة"
-                      value={formDriverNet}
-                      onChange={(e) => setFormDriverNet(e.target.value)}
-                      className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2.5 text-white font-mono"
-                    />
+                </div>
+
+                {/* Read-Only DB-Generated Columns Box (Never edited or sent in payload) */}
+                <div className="p-3.5 rounded-2xl bg-slate-950/70 border border-sky-500/25 space-y-2">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <span className="font-bold text-sky-300 flex items-center gap-1.5">
+                      <Lock className="w-3.5 h-3.5" />
+                      <span>قيم محسوبة تلقائياً داخل قاعدة البيانات (للقراءة فقط)</span>
+                    </span>
+                    <span className="text-[10px] font-mono text-slate-400">
+                      GENERATED ALWAYS AS STORED
+                    </span>
                   </div>
-                  <div>
-                    <label className="block font-bold text-slate-300 mb-1">رسوم العميل *</label>
-                    <input
-                      type="number"
-                      step="0.01"
-                      min="0"
-                      required
-                      placeholder="أدخل القيمة"
-                      value={formCustomerFee}
-                      onChange={(e) => setFormCustomerFee(e.target.value)}
-                      className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2.5 text-white font-mono"
-                    />
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                    <div className="p-2.5 rounded-xl bg-slate-900 border border-slate-800">
+                      <p className="text-[11px] text-slate-400 font-bold">صافي مستحق المندوب (driver_net_fee)</p>
+                      {editingTariff ? (
+                        <div className="mt-1 space-y-0.5">
+                          <p className="font-mono font-black text-sky-300 text-sm">
+                            {editingTariff.driver_net_fee} ج.م{' '}
+                            <span className="text-[10px] font-normal text-slate-400">(القيمة الحالية من DB)</span>
+                          </p>
+                          {generatedPreview.expectedDriverNetFee !== null &&
+                            generatedPreview.expectedDriverNetFee !== editingTariff.driver_net_fee && (
+                              <p className="text-[10px] text-amber-300 font-mono">
+                                المتوقع بعد الحفظ: {generatedPreview.expectedDriverNetFee} ج.م
+                              </p>
+                            )}
+                        </div>
+                      ) : (
+                        <p className="mt-1 font-mono font-bold text-sky-300">
+                          {generatedPreview.expectedDriverNetFee !== null
+                            ? `${generatedPreview.expectedDriverNetFee} ج.م (تقدير مبدئي قبل الحفظ)`
+                            : 'يُحسب تلقائياً في قاعدة البيانات بعد الحفظ'}
+                        </p>
+                      )}
+                    </div>
+
+                    <div className="p-2.5 rounded-xl bg-slate-900 border border-slate-800">
+                      <p className="text-[11px] text-slate-400 font-bold">رسوم التوصيل للعميل (customer_delivery_fee)</p>
+                      {editingTariff ? (
+                        <div className="mt-1 space-y-0.5">
+                          <p className="font-mono font-black text-emerald-300 text-sm">
+                            {editingTariff.customer_delivery_fee} ج.م{' '}
+                            <span className="text-[10px] font-normal text-slate-400">(القيمة الحالية من DB)</span>
+                          </p>
+                          {generatedPreview.expectedCustomerDeliveryFee !== null &&
+                            generatedPreview.expectedCustomerDeliveryFee !== editingTariff.customer_delivery_fee && (
+                              <p className="text-[10px] text-amber-300 font-mono">
+                                المتوقع بعد الحفظ: {generatedPreview.expectedCustomerDeliveryFee} ج.م
+                              </p>
+                            )}
+                        </div>
+                      ) : (
+                        <p className="mt-1 font-mono font-bold text-emerald-300">
+                          {generatedPreview.expectedCustomerDeliveryFee !== null
+                            ? `${generatedPreview.expectedCustomerDeliveryFee} ج.م (تقدير مبدئي قبل الحفظ)`
+                            : 'يُحسب تلقائياً في قاعدة البيانات بعد الحفظ'}
+                        </p>
+                      )}
+                    </div>
                   </div>
+                  <p className="text-[10px] text-slate-400 leading-relaxed">
+                    لا يتم إدخال أو إرسال هذين الحقلين في طلب الحفظ؛ تقوم قاعدة البيانات بحسابهما وتخزينهما تلقائياً ثم يعيد النظام قراءتهما وعرضهما بعد الحفظ.
+                  </p>
                 </div>
 
                 {/* Free Delivery Options & Minutes */}
@@ -1254,10 +1697,16 @@ export const CentralPricingTariffsTab: React.FC<CentralPricingTariffsTabProps> =
                 </button>
                 <button
                   type="submit"
-                  disabled={isSubmitting || Boolean(liveModalConflicts?.hasBlockingConflict)}
+                  disabled={isSubmitting || hasAnyModalBlockingConflict}
                   className="flex-1 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white font-bold cursor-pointer"
                 >
-                  {isSubmitting ? 'جاري الحفظ والتحقق...' : editingId ? 'حفظ التعديلات' : 'حفظ التسعيرة'}
+                  {isSubmitting
+                    ? 'جاري الحفظ والتحقق...'
+                    : editingId
+                    ? 'حفظ التعديلات'
+                    : formScope === 'area'
+                    ? 'إضافة التسعيرة للمناطق المختارة'
+                    : 'حفظ التسعيرة'}
                 </button>
               </div>
             </form>

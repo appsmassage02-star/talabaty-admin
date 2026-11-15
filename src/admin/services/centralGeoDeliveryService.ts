@@ -10,6 +10,7 @@ import {
   CentralServiceDefinition,
   CentralServiceType,
   DeliveryAreaTariff,
+  DeliveryAreaTariffBatchInput,
   DeliveryAreaTariffInput,
   DeliveryDriver,
   DriverCoverageMutationInput,
@@ -21,6 +22,7 @@ import {
   GeoGovernorateAreaCount,
   ServiceSectionDiscrepancy,
   ServiceSectionSummary,
+  TariffAreaConflictDetail,
   TariffConflictCheckResult,
   TariffConflictWarning,
 } from '../types';
@@ -323,11 +325,57 @@ function parseExplicitNonNegativeNumber(
   return { ok: true, value: Math.round(num * 100) / 100 };
 }
 
+export type ValidatedTariffWritablePayload = Omit<
+  DeliveryAreaTariff,
+  'id' | 'created_at' | 'updated_at' | 'driver_net_fee' | 'customer_delivery_fee'
+>;
+
+export function previewGeneratedTariffValues(params: {
+  base_delivery_fee: number | string | null | undefined;
+  admin_commission: number | string | null | undefined;
+  delivery_owner: CentralDeliveryOwner;
+  is_free_delivery: boolean;
+}): {
+  expectedDriverNetFee: number | null;
+  expectedCustomerDeliveryFee: number | null;
+} {
+  const baseRaw = params.base_delivery_fee;
+  const commRaw = params.admin_commission;
+  const hasBase =
+    baseRaw !== null &&
+    baseRaw !== undefined &&
+    String(baseRaw).trim() !== '' &&
+    Number.isFinite(Number(baseRaw)) &&
+    Number(baseRaw) >= 0;
+  const hasComm =
+    commRaw !== null &&
+    commRaw !== undefined &&
+    String(commRaw).trim() !== '' &&
+    Number.isFinite(Number(commRaw)) &&
+    Number(commRaw) >= 0;
+
+  const baseVal = hasBase ? Math.round(Number(baseRaw) * 100) / 100 : null;
+  const commVal = hasComm ? Math.round(Number(commRaw) * 100) / 100 : null;
+
+  const expectedCustomerDeliveryFee = params.is_free_delivery ? 0 : baseVal;
+  let expectedDriverNetFee: number | null = null;
+  if (params.delivery_owner === 'restaurant') {
+    expectedDriverNetFee = 0;
+  } else if (baseVal !== null && commVal !== null) {
+    expectedDriverNetFee = Math.round((baseVal - commVal) * 100) / 100;
+  }
+
+  return {
+    expectedDriverNetFee,
+    expectedCustomerDeliveryFee,
+  };
+}
+
 export function validateTariffInput(
   input: DeliveryAreaTariffInput,
   lookups: GeoLookups,
   restaurantsById?: Map<string, CentralRestaurantSummary>
-): { valid: boolean; error?: string; payload?: Omit<DeliveryAreaTariff, 'id' | 'created_at' | 'updated_at'> } {
+): { valid: boolean; error?: string; payload?: ValidatedTariffWritablePayload } {
   if (!ALLOWED_CENTRAL_SERVICE_TYPES.includes(input.service_type)) {
     return { valid: false, error: `قسم الخدمة (${input.service_type}) غير مدعوم. الأقسام المعتمدة فقط: household_shortages، pharmacy، ready_food.` };
   }
@@ -370,12 +418,6 @@ export function validateTariffInput(
   const commRes = parseExplicitNonNegativeNumber(input.admin_commission, 'عمولة الإدارة');
   if (!commRes.ok || commRes.value === undefined) return { valid: false, error: commRes.error };
 
-  const driverNetRes = parseExplicitNonNegativeNumber(input.driver_net_fee, 'صافي المندوب');
-  if (!driverNetRes.ok || driverNetRes.value === undefined) return { valid: false, error: driverNetRes.error };
-
-  const custRes = parseExplicitNonNegativeNumber(input.customer_delivery_fee, 'رسوم العميل');
-  if (!custRes.ok || custRes.value === undefined) return { valid: false, error: custRes.error };
-
   let estimatedMinutes: number | null = null;
   if (
     input.estimated_delivery_minutes !== null &&
@@ -401,7 +443,8 @@ export function validateTariffInput(
     }
   }
 
-  // Never implicitly mutate free_delivery_cost_bearer or overwrite fee fields with 0!
+  // Note: driver_net_fee & customer_delivery_fee are PostgreSQL GENERATED ALWAYS AS STORED columns
+  // and must NEVER be validated as manual user input or included in INSERT/UPDATE payloads.
   return {
     valid: true,
     payload: {
@@ -414,8 +457,6 @@ export function validateTariffInput(
       area_id: geoCheck.normalized.area_id,
       base_delivery_fee: baseRes.value,
       admin_commission: commRes.value,
-      driver_net_fee: driverNetRes.value,
-      customer_delivery_fee: custRes.value,
       is_free_delivery: isFree,
       free_delivery_cost_bearer: rawBearer,
       estimated_delivery_minutes: estimatedMinutes,
@@ -532,6 +573,66 @@ export function detectTariffConflicts(
   return {
     hasBlockingConflict: conflicts.some((c) => c.severity === 'blocking'),
     conflicts,
+  };
+}
+
+export function detectBatchTariffConflicts(
+  candidate: {
+    service_type: CentralServiceType;
+    delivery_owner: CentralDeliveryOwner;
+    restaurant_id?: string | null;
+    governorate_id: string;
+    center_id: string;
+    area_ids: string[];
+    is_enabled: boolean;
+  },
+  existingTariffs: DeliveryAreaTariff[],
+  lookups: GeoLookups
+): {
+  hasBlockingConflict: boolean;
+  blockingDetails: TariffAreaConflictDetail[];
+  warningDetails: TariffAreaConflictDetail[];
+} {
+  const uniqueAreaIds = Array.from(new Set(candidate.area_ids.map((id) => id.trim()).filter(Boolean)));
+  const blockingDetails: TariffAreaConflictDetail[] = [];
+  const warningDetails: TariffAreaConflictDetail[] = [];
+
+  for (const areaId of uniqueAreaIds) {
+    const areaName = lookups.areasById.get(areaId)?.name_ar || areaId;
+    const areaRes = detectTariffConflicts(
+      {
+        service_type: candidate.service_type,
+        delivery_owner: candidate.delivery_owner,
+        restaurant_id: candidate.restaurant_id || null,
+        scope_level: 'area',
+        governorate_id: candidate.governorate_id,
+        center_id: candidate.center_id,
+        area_id: areaId,
+        is_enabled: candidate.is_enabled,
+      },
+      existingTariffs
+    );
+    for (const c of areaRes.conflicts) {
+      const detail: TariffAreaConflictDetail = {
+        areaId,
+        areaName,
+        severity: c.severity,
+        kind: c.kind,
+        message: c.message,
+        conflictingTariff: c.conflictingTariff,
+      };
+      if (c.severity === 'blocking') {
+        blockingDetails.push(detail);
+      } else {
+        warningDetails.push(detail);
+      }
+    }
+  }
+
+  return {
+    hasBlockingConflict: blockingDetails.length > 0,
+    blockingDetails,
+    warningDetails,
   };
 }
 
@@ -1531,6 +1632,7 @@ export function createCentralGeoDeliveryService(
       }
 
       const nowIso = new Date().toISOString();
+      // Strictly omit DB-generated columns (driver_net_fee, customer_delivery_fee) from INSERT/UPDATE payload
       const dbRow: Record<string, any> = {
         service_type: validation.payload.service_type,
         delivery_owner: validation.payload.delivery_owner,
@@ -1541,8 +1643,6 @@ export function createCentralGeoDeliveryService(
         area_id: validation.payload.area_id,
         base_delivery_fee: validation.payload.base_delivery_fee,
         admin_commission: validation.payload.admin_commission,
-        driver_net_fee: validation.payload.driver_net_fee,
-        customer_delivery_fee: validation.payload.customer_delivery_fee,
         is_free_delivery: validation.payload.is_free_delivery,
         free_delivery_cost_bearer: validation.payload.free_delivery_cost_bearer,
         estimated_delivery_minutes: validation.payload.estimated_delivery_minutes,
@@ -1599,7 +1699,7 @@ export function createCentralGeoDeliveryService(
         targetId = insertedRows[0].id;
       }
 
-      // Mandatory Read-After-Write Verification
+      // Mandatory Read-After-Write Verification (reads PostgreSQL-computed driver_net_fee & customer_delivery_fee)
       const { data: verified, error: verifyErr } = await client
         .from('delivery_area_tariffs')
         .select(TARIFF_COLUMNS)
@@ -1625,6 +1725,183 @@ export function createCentralGeoDeliveryService(
         success: true,
         verifiedFromDb: true,
         data: verified as DeliveryAreaTariff,
+      };
+    },
+
+    async saveDeliveryAreaTariffsBatch(
+      input: DeliveryAreaTariffBatchInput,
+      existingTariffs: DeliveryAreaTariff[],
+      lookups: GeoLookups,
+      restaurantsById?: Map<string, CentralRestaurantSummary>
+    ): Promise<CentralMutationResult<DeliveryAreaTariff[]> & { areaConflicts?: TariffAreaConflictDetail[] }> {
+      if (!client) return { success: false, error: 'Supabase غير متصل' };
+
+      const uniqueAreaIds = Array.from(
+        new Set((input.area_ids || []).map((id) => (id || '').trim()).filter(Boolean))
+      );
+      if (uniqueAreaIds.length === 0) {
+        return { success: false, error: 'يجب اختيار منطقة واحدة على الأقل لإضافة التسعيرة.' };
+      }
+
+      // 1) Validate pricing & base hierarchy fields via first area
+      const baseValidation = validateTariffInput(
+        {
+          service_type: input.service_type,
+          delivery_owner: input.delivery_owner,
+          restaurant_id: input.restaurant_id,
+          scope_level: 'area',
+          governorate_id: input.governorate_id,
+          center_id: input.center_id,
+          area_id: uniqueAreaIds[0],
+          base_delivery_fee: input.base_delivery_fee,
+          admin_commission: input.admin_commission,
+          is_free_delivery: input.is_free_delivery,
+          free_delivery_cost_bearer: input.free_delivery_cost_bearer,
+          estimated_delivery_minutes: input.estimated_delivery_minutes,
+          is_enabled: input.is_enabled,
+          notes: input.notes,
+        },
+        lookups,
+        restaurantsById
+      );
+      if (!baseValidation.valid || !baseValidation.payload) {
+        return { success: false, error: baseValidation.error || 'بيانات التسعيرة غير مكتملة أو غير صالحة.' };
+      }
+
+      // 2) Verify EVERY selected area belongs to center + governorate & active status when enabled
+      for (const areaId of uniqueAreaIds) {
+        const areaGeoCheck = validateGeoHierarchySelection(
+          {
+            scope_level: 'area',
+            governorate_id: input.governorate_id,
+            center_id: input.center_id,
+            area_id: areaId,
+            requireActiveGeo: Boolean(input.is_enabled),
+          },
+          lookups
+        );
+        if (!areaGeoCheck.valid) {
+          return {
+            success: false,
+            error: areaGeoCheck.error || `بيانات المنطقة (${areaId}) غير صالحة.`,
+          };
+        }
+      }
+
+      // 3) Check duplicate/conflict across ALL selected areas BEFORE attempting DB write
+      const batchConflicts = detectBatchTariffConflicts(
+        {
+          service_type: baseValidation.payload.service_type,
+          delivery_owner: baseValidation.payload.delivery_owner,
+          restaurant_id: baseValidation.payload.restaurant_id,
+          governorate_id: baseValidation.payload.governorate_id,
+          center_id: baseValidation.payload.center_id || input.center_id,
+          area_ids: uniqueAreaIds,
+          is_enabled: baseValidation.payload.is_enabled,
+        },
+        existingTariffs,
+        lookups
+      );
+
+      if (batchConflicts.hasBlockingConflict) {
+        const summaryLines = batchConflicts.blockingDetails.map(
+          (d) => `• ${d.areaName}: ${d.message}`
+        );
+        return {
+          success: false,
+          areaConflicts: batchConflicts.blockingDetails,
+          error: `تعذر حفظ الدفعة لوجود تسعيرة مطابقة بالفعل للمناطق التالية:\n${summaryLines.join('\n')}`,
+        };
+      }
+
+      // 4) Single-statement atomic batch INSERT (omits driver_net_fee & customer_delivery_fee)
+      const nowIso = new Date().toISOString();
+      const baseWritableRow = {
+        service_type: baseValidation.payload.service_type,
+        delivery_owner: baseValidation.payload.delivery_owner,
+        restaurant_id: baseValidation.payload.restaurant_id,
+        scope_level: 'area' as const,
+        governorate_id: baseValidation.payload.governorate_id,
+        center_id: baseValidation.payload.center_id,
+        base_delivery_fee: baseValidation.payload.base_delivery_fee,
+        admin_commission: baseValidation.payload.admin_commission,
+        is_free_delivery: baseValidation.payload.is_free_delivery,
+        free_delivery_cost_bearer: baseValidation.payload.free_delivery_cost_bearer,
+        estimated_delivery_minutes: baseValidation.payload.estimated_delivery_minutes,
+        is_enabled: baseValidation.payload.is_enabled,
+        notes: baseValidation.payload.notes,
+        created_at: nowIso,
+        updated_at: nowIso,
+      };
+
+      const rowsToInsert = uniqueAreaIds.map((areaId) => ({
+        ...baseWritableRow,
+        area_id: areaId,
+      }));
+
+      const { data: insertedRows, error } = await client
+        .from('delivery_area_tariffs')
+        .insert(rowsToInsert)
+        .select(TARIFF_COLUMNS);
+
+      if (error) {
+        const formatted = formatCentralDbError(error, 'delivery_area_tariffs');
+        return {
+          success: false,
+          error: formatted.message,
+          errorCode: formatted.code,
+          constraintHint: formatted.constraintHint,
+        };
+      }
+
+      if (!insertedRows || insertedRows.length !== rowsToInsert.length) {
+        return {
+          success: false,
+          verifiedFromDb: false,
+          error: `لم يكتمل إدراج جميع المناطق المطلوبة (${insertedRows?.length || 0} من ${rowsToInsert.length}) في delivery_area_tariffs.`,
+        };
+      }
+
+      // 5) Mandatory Read-After-Write Verification of all inserted records
+      const insertedIds = insertedRows.map((r: any) => r.id).filter(Boolean);
+      const { data: verifiedRows, error: verifyErr } = await client
+        .from('delivery_area_tariffs')
+        .select(TARIFF_COLUMNS)
+        .in('id', insertedIds);
+
+      if (verifyErr || !verifiedRows || verifiedRows.length !== rowsToInsert.length) {
+        return {
+          success: false,
+          verifiedFromDb: false,
+          error: `تعذر تأكيد حفظ جميع سجلات التسعيرة عند إعادة القراءة من قاعدة البيانات (${verifiedRows?.length || 0}/${rowsToInsert.length})${verifyErr ? `: ${verifyErr.message}` : ''}.`,
+        };
+      }
+
+      const verifiedAreaSet = new Set(verifiedRows.map((r: any) => r.area_id));
+      const missingAreaIds = uniqueAreaIds.filter((aid) => !verifiedAreaSet.has(aid));
+      if (missingAreaIds.length > 0) {
+        return {
+          success: false,
+          verifiedFromDb: false,
+          error: `بعض المناطق المختارة لم تظهر عند إعادة القراءة من قاعدة البيانات (${missingAreaIds.join(', ')}).`,
+        };
+      }
+
+      await auditLogger(
+        uniqueAreaIds.length > 1 ? 'central_tariff.batch_create' : 'central_tariff.create',
+        'delivery_area_tariffs',
+        insertedIds[0],
+        {
+          ...baseWritableRow,
+          area_ids: uniqueAreaIds,
+          inserted_count: verifiedRows.length,
+        }
+      );
+
+      return {
+        success: true,
+        verifiedFromDb: true,
+        data: verifiedRows as DeliveryAreaTariff[],
       };
     },
 

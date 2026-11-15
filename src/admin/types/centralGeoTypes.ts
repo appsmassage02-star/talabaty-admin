@@ -141,13 +141,37 @@ export interface DeliveryAreaTariffInput {
   area_id?: string | null;
   base_delivery_fee: number | string;
   admin_commission: number | string;
-  driver_net_fee: number | string;
-  customer_delivery_fee: number | string;
   is_free_delivery: boolean;
   free_delivery_cost_bearer?: CentralFreeDeliveryCostBearer | null;
   estimated_delivery_minutes?: number | string | null;
   is_enabled: boolean;
   notes?: string | null;
+}
+
+export interface DeliveryAreaTariffBatchInput {
+  service_type: CentralServiceType;
+  delivery_owner: CentralDeliveryOwner;
+  restaurant_id?: string | null;
+  scope_level: 'area';
+  governorate_id: string;
+  center_id: string;
+  area_ids: string[];
+  base_delivery_fee: number | string;
+  admin_commission: number | string;
+  is_free_delivery: boolean;
+  free_delivery_cost_bearer?: CentralFreeDeliveryCostBearer | null;
+  estimated_delivery_minutes?: number | string | null;
+  is_enabled: boolean;
+  notes?: string | null;
+}
+
+export interface TariffAreaConflictDetail {
+  areaId: string;
+  areaName: string;
+  severity: 'blocking' | 'warning';
+  kind: TariffConflictWarning['kind'];
+  message: string;
+  conflictingTariff: DeliveryAreaTariff;
 }
 
 export interface TariffConflictWarning {
