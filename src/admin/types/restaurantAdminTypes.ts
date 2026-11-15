@@ -253,6 +253,7 @@ export interface RestaurantOrder {
   status_history?: RestaurantOrderStatusHistory[];
   delivery_order?: RestaurantDeliveryOrder | null;
   invoice?: RestaurantInvoice | null;
+  cancellation_request_id?: string | null;
 }
 
 export interface RestaurantOrderItem {

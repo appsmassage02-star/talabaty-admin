@@ -30,6 +30,10 @@ import {
   Percent,
   Wallet,
   AlertTriangle,
+  Globe,
+  Coins,
+  Layers,
+  Navigation,
 } from 'lucide-react';
 import { AdminPermission } from '../types';
 
@@ -84,6 +88,39 @@ export const ADMIN_MANAGEMENT_GROUPS: AdminManagementGroup[] = [
         label: 'التقارير والمؤشرات الفعلية',
         icon: BarChart3,
         permission: 'analytics.view',
+      },
+    ],
+  },
+  {
+    groupId: 'central_geo_delivery_pricing',
+    titleAr: 'إدارة المناطق والتوصيل والتسعير',
+    titleEn: 'CENTRAL GEO, PRICING & FLEET',
+    descriptionAr: 'الإدارة المركزية لأقسام الخدمات والمناطق الجغرافية والتسعير وتوزيع العمالة',
+    groupIcon: Globe,
+    items: [
+      {
+        id: 'central_services',
+        label: 'أقسام الخدمات والتغطية',
+        icon: Layers,
+        permission: 'central_areas.view',
+      },
+      {
+        id: 'central_geo',
+        label: 'المناطق الجغرافية المعتمدة',
+        icon: Globe,
+        permission: 'central_areas.view',
+      },
+      {
+        id: 'central_pricing',
+        label: 'رسوم التوصيل والتسعير',
+        icon: Coins,
+        permission: 'central_pricing.view',
+      },
+      {
+        id: 'central_drivers',
+        label: 'عمالة التوصيل وتوزيعها',
+        icon: Navigation,
+        permission: 'central_driver_coverage.view',
       },
     ],
   },

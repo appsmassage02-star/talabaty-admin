@@ -36,8 +36,18 @@ export const AdminTeamManagement: React.FC = () => {
   const [email, setEmail] = useState('');
   const [fullName, setFullName] = useState('');
   const [role, setRole] = useState<AdminRole>('ADMIN');
+  const [customPermissions, setCustomPermissions] = useState<AdminPermission[]>([]);
   const [isActive, setIsActive] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
+
+  const CENTRAL_CUSTOM_PERMISSIONS: { key: AdminPermission; label: string }[] = [
+    { key: 'central_areas.view', label: 'عرض المناطق الجغرافية وأقسام الخدمات' },
+    { key: 'central_areas.manage', label: 'إدارة تغطية أقسام الخدمات' },
+    { key: 'central_pricing.view', label: 'عرض رسوم التوصيل والتسعير' },
+    { key: 'central_pricing.manage', label: 'إدارة وتعديل التسعير المركزي' },
+    { key: 'central_driver_coverage.view', label: 'عرض عمالة التوصيل وتوزيعها' },
+    { key: 'central_driver_coverage.manage', label: 'إدارة توزيع العمالة على المناطق' },
+  ];
 
   // Delete Admin
   const [adminToDelete, setAdminToDelete] = useState<AdminUser | null>(null);
@@ -65,6 +75,7 @@ export const AdminTeamManagement: React.FC = () => {
       setEmail('');
       setFullName('');
       setRole('ADMIN');
+      setCustomPermissions([]);
       setIsActive(true);
     }
     setModalMode('create');
@@ -77,6 +88,7 @@ export const AdminTeamManagement: React.FC = () => {
     setEmail('');
     setFullName('');
     setRole('ADMIN');
+    setCustomPermissions([]);
     setIsActive(true);
   };
 
@@ -87,6 +99,7 @@ export const AdminTeamManagement: React.FC = () => {
     setEmail(adm.email);
     setFullName(adm.full_name || '');
     setRole(adm.role);
+    setCustomPermissions(Array.isArray(adm.custom_permissions) ? adm.custom_permissions : []);
     setIsActive(adm.is_active);
     setIsModalOpen(true);
   };
@@ -106,6 +119,7 @@ export const AdminTeamManagement: React.FC = () => {
           email: email.trim(),
           full_name: fullName.trim() || undefined,
           role,
+          custom_permissions: customPermissions,
           is_active: isActive,
         });
 
@@ -118,7 +132,7 @@ export const AdminTeamManagement: React.FC = () => {
           showToast(res.error || 'فشل إضافة المشرف', 'error');
         }
       } else if (editingAdmin) {
-        const res = await adminService.updateAdminRole(editingAdmin.id, role, isActive);
+        const res = await adminService.updateAdminRole(editingAdmin.id, role, isActive, customPermissions);
         if (res.success) {
           showToast(`تم تحديث صلاحيات المشرف ${editingAdmin.email}`, 'success');
           setIsModalOpen(false);
@@ -384,6 +398,41 @@ export const AdminTeamManagement: React.FC = () => {
                     <option value="READ_ONLY">مشاهدة وقراءة فقط (Read Only)</option>
                   </select>
                 </div>
+
+                {(role === 'CONTENT_MANAGER' || role === 'SUPPORT') && (
+                  <div className="p-3 rounded-2xl bg-slate-950/70 border border-slate-800 space-y-2">
+                    <span className="font-bold text-slate-300 block text-[11px]">
+                      صلاحيات مخصصة لإدارة المناطق والتوصيل والتسعير
+                    </span>
+                    <div className="space-y-1.5">
+                      {CENTRAL_CUSTOM_PERMISSIONS.map((perm) => {
+                        const checked = customPermissions.includes(perm.key);
+                        return (
+                          <label
+                            key={perm.key}
+                            className="flex items-center gap-2 text-[11px] text-slate-300 cursor-pointer"
+                          >
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={(e) => {
+                                if (e.target.checked) {
+                                  setCustomPermissions((prev) =>
+                                    prev.includes(perm.key) ? prev : [...prev, perm.key]
+                                  );
+                                } else {
+                                  setCustomPermissions((prev) => prev.filter((p) => p !== perm.key));
+                                }
+                              }}
+                              className="w-3.5 h-3.5 rounded text-emerald-500 bg-slate-900 border-slate-700"
+                            />
+                            <span>{perm.label}</span>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
 
                 <div className="flex items-center space-x-2 space-x-reverse pt-2">
                   <input

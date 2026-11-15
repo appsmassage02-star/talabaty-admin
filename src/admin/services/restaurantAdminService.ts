@@ -42,6 +42,36 @@ import {
 } from '../types/restaurantAdminTypes';
 
 export const restaurantAdminService = {
+  async fetchAllRowsPaged<T = any>(
+    buildQueryForRange: (from: number, to: number) => any,
+    pageSize: number = 500
+  ): Promise<{ success: boolean; data: T[]; error?: string }> {
+    let from = 0;
+    const allData: T[] = [];
+    const seenIds = new Set<string>();
+    while (true) {
+      const { data, error } = await buildQueryForRange(from, from + pageSize - 1);
+      if (error) {
+        return { success: false, data: [], error: error.message || 'فشل جلب إحدى صفحات البيانات' };
+      }
+      const rows = (data || []) as T[];
+      for (const row of rows) {
+        const rowId = (row as any)?.id;
+        if (rowId !== undefined && rowId !== null) {
+          const key = String(rowId);
+          if (seenIds.has(key)) continue;
+          seenIds.add(key);
+        }
+        allData.push(row);
+      }
+      if (rows.length < pageSize) {
+        break;
+      }
+      from += pageSize;
+    }
+    return { success: true, data: allData };
+  },
+
   // ==========================================================================
   // 1. SECTION SETTINGS (public.restaurant_section_settings)
   // Columns: id, section_enabled, global_max_delivery_radius_km, no_driver_timeout_minutes, created_at, updated_at
@@ -1552,6 +1582,20 @@ export const restaurantAdminService = {
       order.delivery_order = (deliveryOrderRes.data as RestaurantDeliveryOrder) || null;
       order.invoice = (invoiceRes.data as RestaurantInvoice) || null;
 
+      if ((order.status || '').toLowerCase() === 'cancellation_pending') {
+        const { data: pendingCancels } = await supabase.rpc(
+          'admin_list_restaurant_cancellation_requests',
+          { p_status: 'pending' }
+        );
+        const match = ((pendingCancels || []) as any[]).find(
+          (req) => req.order_id === order.id
+        );
+        const realReqId = match
+          ? match.request_id || (match.id && match.id !== match.order_id ? match.id : null)
+          : null;
+        order.cancellation_request_id = realReqId ? String(realReqId) : null;
+      }
+
       return { order };
     } catch (err: any) {
       return { order: null, error: err?.message || 'تعذر جلب تفاصيل الطلب' };
@@ -1968,14 +2012,83 @@ export const restaurantAdminService = {
         offersRes,
         settlementsRes,
       ] = await Promise.all([
-        supabase.from('restaurants').select('id, is_active, is_open'),
+        this.fetchAllRowsPaged(
+          (from, to) =>
+            supabase
+              .from('restaurants')
+              .select('id, is_active, is_open')
+              .order('id', { ascending: true })
+              .range(from, to),
+          500
+        ),
         supabase.from('restaurant_categories').select('id', { count: 'exact', head: true }),
-        supabase.from('restaurant_menu_items').select('id, is_available'),
-        supabase.from('restaurant_orders').select('id, status, customer_total, delivery_fee'),
-        supabase.from('restaurant_complaints').select('id, status'),
-        supabase.from('restaurant_offers').select('id, is_active'),
-        supabase.from('restaurant_settlements').select('id, status'),
+        this.fetchAllRowsPaged(
+          (from, to) =>
+            supabase
+              .from('restaurant_menu_items')
+              .select('id, is_available')
+              .order('id', { ascending: true })
+              .range(from, to),
+          500
+        ),
+        this.fetchAllRowsPaged(
+          (from, to) =>
+            supabase
+              .from('restaurant_orders')
+              .select('id, status, customer_total, delivery_fee')
+              .order('id', { ascending: true })
+              .range(from, to),
+          500
+        ),
+        this.fetchAllRowsPaged(
+          (from, to) =>
+            supabase
+              .from('restaurant_complaints')
+              .select('id, status')
+              .order('id', { ascending: true })
+              .range(from, to),
+          500
+        ),
+        this.fetchAllRowsPaged(
+          (from, to) =>
+            supabase
+              .from('restaurant_offers')
+              .select('id, is_active')
+              .order('id', { ascending: true })
+              .range(from, to),
+          500
+        ),
+        this.fetchAllRowsPaged(
+          (from, to) =>
+            supabase
+              .from('restaurant_settlements')
+              .select('id, status')
+              .order('id', { ascending: true })
+              .range(from, to),
+          500
+        ),
       ]);
+
+      if (
+        !restaurantsRes.success ||
+        categoriesRes.error ||
+        !menuItemsRes.success ||
+        !ordersRes.success ||
+        !complaintsRes.success ||
+        !offersRes.success ||
+        !settlementsRes.success
+      ) {
+        const errMessage =
+          restaurantsRes.error ||
+          categoriesRes.error?.message ||
+          menuItemsRes.error ||
+          ordersRes.error ||
+          complaintsRes.error ||
+          offersRes.error ||
+          settlementsRes.error ||
+          'تعذر جلب إحصاءات المطاعم كاملة من قاعدة البيانات';
+        return { stats: emptyStats, error: errMessage };
+      }
 
       const restaurants = restaurantsRes.data || [];
       const menuItems = menuItemsRes.data || [];
@@ -3010,7 +3123,16 @@ export const restaurantAdminService = {
         return { requests: [], error: `فشل جلب طلبات الإلغاء: ${error.message}` };
       }
 
-      return { requests: (data || []) as RestaurantCancellationRequest[] };
+      const normalized = ((data || []) as any[]).map((row) => {
+        const realReqId =
+          row.request_id || (row.id && row.id !== row.order_id ? row.id : undefined);
+        return {
+          ...row,
+          request_id: realReqId ? String(realReqId) : undefined,
+        } as RestaurantCancellationRequest;
+      });
+
+      return { requests: normalized };
     } catch (err: any) {
       return { requests: [], error: err?.message || 'تعذر جلب طلبات الإلغاء' };
     }
@@ -3019,17 +3141,17 @@ export const restaurantAdminService = {
   async decideCancellationRequest(
     requestId: string,
     approve: boolean,
-    reason: string
+    reason?: string
   ): Promise<{ success: boolean; error?: string }> {
     if (!supabase || !isSupabaseConfigured) {
       return { success: false, error: 'Supabase غير متصل' };
     }
     const cleanRequestId = requestId?.trim();
     if (!cleanRequestId) {
-      return { success: false, error: 'معرف طلب الإلغاء مطلوب' };
+      return { success: false, error: 'معرف طلب الإلغاء الحقيقي (request_id) مطلوب' };
     }
 
-    const cleanReason = reason?.trim();
+    const cleanReason = reason?.trim() || '';
     if (!approve && !cleanReason) {
       return { success: false, error: 'يرجى كتابة سبب أو ملاحظة توضح قرار رفض الإلغاء' };
     }
@@ -3043,6 +3165,18 @@ export const restaurantAdminService = {
 
       if (error) {
         return { success: false, error: `فشل تنفيذ قرار الإلغاء: ${error.message}` };
+      }
+
+      if (
+        data &&
+        typeof data === 'object' &&
+        'success' in data &&
+        (data as any).success === false
+      ) {
+        return {
+          success: false,
+          error: (data as any).error || (data as any).message || 'رفضت دالة قاعدة البيانات تنفيذ قرار الإلغاء',
+        };
       }
 
       return { success: true };

@@ -1172,6 +1172,14 @@ export const AdminRestaurantManagement: React.FC = () => {
       showToast('ليس لديك صلاحية لاتخاذ قرار بشأن طلبات الإلغاء', 'error');
       return;
     }
+    const realRequestId = (
+      request.request_id ||
+      (request.id && request.id !== request.order_id ? request.id : '')
+    ).trim();
+    if (!realRequestId || realRequestId === request.order_id) {
+      showToast('تعذر تحديد معرف طلب الإلغاء الحقيقي (request_id) لهذا الطلب', 'error');
+      return;
+    }
     setCancellationDecisionModal({ request, approve });
     setCancellationDecisionReason('');
   };
@@ -1179,6 +1187,15 @@ export const AdminRestaurantManagement: React.FC = () => {
   const handleSubmitCancellationDecision = async () => {
     if (!cancellationDecisionModal) return;
     const { request, approve } = cancellationDecisionModal;
+
+    const realRequestId = (
+      request.request_id ||
+      (request.id && request.id !== request.order_id ? request.id : '')
+    ).trim();
+    if (!realRequestId || realRequestId === request.order_id) {
+      showToast('معرف طلب الإلغاء الحقيقي (request_id) غير صالح أو مفقود', 'error');
+      return;
+    }
 
     if (!approve && !cancellationDecisionReason.trim()) {
       showToast('يرجى كتابة سبب رفض طلب الإلغاء', 'error');
@@ -1188,7 +1205,7 @@ export const AdminRestaurantManagement: React.FC = () => {
     setIsSubmittingCancellationDecision(true);
     try {
       const res = await restaurantAdminService.decideCancellationRequest(
-        request.id,
+        realRequestId,
         approve,
         cancellationDecisionReason.trim() || undefined
       );

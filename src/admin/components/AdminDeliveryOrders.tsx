@@ -261,12 +261,18 @@ export const AdminDeliveryOrders: React.FC = () => {
       return;
     }
 
+    const trimmedNote = decisionNote.trim();
+    if (!cancellationAction.approve && !trimmedNote) {
+      showToast('يرجى كتابة سبب رفض طلب الإلغاء (إلزامي)', 'error');
+      return;
+    }
+
     setIsSubmittingDecision(true);
     try {
       const res = await adminService.decideCancellation(
         cancellationAction.order.id,
         cancellationAction.approve,
-        decisionNote.trim() || undefined
+        trimmedNote || undefined
       );
 
       if (res.success) {
@@ -1832,14 +1838,14 @@ export const AdminDeliveryOrders: React.FC = () => {
                 <label className="text-xs font-semibold text-slate-700 block">
                   {cancellationAction.approve
                     ? 'ملاحظات الإدارة (اختياري - تُحفظ كمسودة عند الإغلاق):'
-                    : 'سبب الرفض وملاحظات الإدارة (موصى بها - تُحفظ كمسودة عند الإغلاق):'}
+                    : 'سبب رفض طلب الإلغاء (إلزامي * - يجب توضيح السبب قبل التأكيد):'}
                 </label>
                 <textarea
                   rows={3}
                   placeholder={
                     cancellationAction.approve
                       ? 'اكتب أي توضيحات إدارية لقرار الإلغاء...'
-                      : 'مثال: تم التواصل مع العميل وهو بانتظار استلام الطلب الآن...'
+                      : 'اكتب سبب رفض طلب الإلغاء بشكل واضح وإلزامي...'
                   }
                   value={decisionNote}
                   onChange={(e) => setDecisionNote(e.target.value)}
@@ -1862,8 +1868,11 @@ export const AdminDeliveryOrders: React.FC = () => {
 
               <button
                 onClick={handleSubmitDecision}
-                disabled={isSubmittingDecision}
-                className={`flex items-center gap-1.5 px-4 py-2.5 text-xs font-semibold text-white rounded-xl shadow-xs transition-colors disabled:opacity-50 cursor-pointer ${
+                disabled={
+                  isSubmittingDecision ||
+                  (!cancellationAction.approve && !decisionNote.trim())
+                }
+                className={`flex items-center gap-1.5 px-4 py-2.5 text-xs font-semibold text-white rounded-xl shadow-xs transition-colors disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer ${
                   cancellationAction.approve
                     ? 'bg-rose-600 hover:bg-rose-700'
                     : 'bg-emerald-600 hover:bg-emerald-700'
@@ -1912,13 +1921,17 @@ export const AdminDeliveryOrders: React.FC = () => {
                 </div>
               </div>
 
+              <div className="p-3 rounded-xl bg-amber-50 border border-amber-200 text-xs text-amber-900 leading-relaxed">
+                تنبيه تشغيلي: الإلغاء الإداري المباشر لطلبات البيت متوقف حاليًا لعدم توفر دالة قاعدة بيانات (RPC) معتمدة لهذا المسار، ولا يُسمح بالتعديل المباشر على جدول الطلبات. للمراجعة والبت في طلبات الإلغاء المعلقة استخدم أزرار قرار الإلغاء المعتمدة.
+              </div>
+
               <div className="space-y-1.5">
                 <label className="text-xs font-semibold text-slate-700 block">
-                  سبب الإلغاء الإداري (مطلوب - يُحفظ كمسودة عند الإغلاق):
+                  سبب الإلغاء الإداري (مطلوب):
                 </label>
                 <textarea
                   rows={3}
-                  placeholder="اكتب سبب إلغاء الطلب لتوثيقه في سجل الطلب..."
+                  placeholder="اكتب سبب إلغاء الطلب..."
                   value={directCancelReason}
                   onChange={(e) => setDirectCancelReason(e.target.value)}
                   className="w-full p-2.5 text-xs bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500 resize-none"

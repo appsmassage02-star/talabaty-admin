@@ -36,9 +36,16 @@ export type AdminPermission =
   | 'restaurants.view'
   | 'restaurants.manage'
   | 'orders.view'
-  | 'orders.manage';
+  | 'orders.manage'
+  | 'central_areas.view'
+  | 'central_areas.manage'
+  | 'central_pricing.view'
+  | 'central_pricing.manage'
+  | 'central_driver_coverage.view'
+  | 'central_driver_coverage.manage';
 
 export * from './types/restaurantAdminTypes';
+export * from './types/centralGeoTypes';
 
 export interface AdminUser {
   id: string;
@@ -462,7 +469,11 @@ export type AdminNavSection =
   | 'notifications_broadcast'
   | 'app_assets'
   | 'settings'
-  | 'settings_rls';
+  | 'settings_rls'
+  | 'central_services'
+  | 'central_geo'
+  | 'central_pricing'
+  | 'central_drivers';
 
 export type AppAssetKey = 'home' | 'driver' | 'admin';
 

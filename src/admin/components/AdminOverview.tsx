@@ -327,23 +327,31 @@ export const AdminOverview: React.FC = () => {
       adminService
         .getOperationalCommandCenterData()
         .then((cmdRes) => {
-          if (cmdRes?.data) {
+          if (cmdRes?.error) {
+            setCommandError(cmdRes.error);
+          } else if (cmdRes?.data) {
             setCommandData(cmdRes.data);
             setCommandError(null);
           }
         })
-        .catch(() => {});
+        .catch((err) => {
+          setCommandError(err?.message || 'تعذر تحديث بيانات مركز العمليات');
+        });
 
       if (canViewRestaurants) {
         restaurantAdminService
           .getOverviewStats()
           .then((restRes) => {
-            if (restRes?.stats) {
+            if (restRes?.error) {
+              setRestaurantStatsError(restRes.error);
+            } else if (restRes?.stats) {
               setRestaurantStats(restRes.stats);
               setRestaurantStatsError(null);
             }
           })
-          .catch(() => {});
+          .catch((err) => {
+            setRestaurantStatsError(err?.message || 'تعذر تحديث إحصاءات المطاعم');
+          });
       }
 
       // Refresh overview aggregate stats in sync with operational queues
@@ -510,6 +518,17 @@ export const AdminOverview: React.FC = () => {
         showToast('عفواً، لا تملك صلاحية اتخاذ قرار الإلغاء لهذا الطلب', 'error');
         return;
       }
+      if (
+        params.source === 'restaurant' &&
+        (!params.requestId?.trim() || params.requestId.trim() === params.orderId)
+      ) {
+        showToast(
+          'تعذر تحديد معرف طلب الإلغاء الحقيقي (request_id) لهذا الطلب؛ لا يمكن تنفيذ القرار بمعرف الطلب الأصلي.',
+          'error'
+        );
+        return;
+      }
+      setCancelAdminNote('');
       setCancelDecisionError(null);
       setCancelDecisionModal(params);
     },
@@ -526,15 +545,37 @@ export const AdminOverview: React.FC = () => {
       return;
     }
 
+    const trimmedNote = cancelAdminNote.trim() || undefined;
+    const isApprove = cancelDecisionModal.decision === 'approve_cancel';
+
+    if (
+      !isApprove &&
+      !trimmedNote &&
+      (cancelDecisionModal.source === 'delivery' || cancelDecisionModal.source === 'restaurant')
+    ) {
+      const failMsg = 'يرجى كتابة سبب رفض طلب الإلغاء قبل التأكيد (إلزامي)';
+      setCancelDecisionError(failMsg);
+      showToast(failMsg, 'error');
+      return;
+    }
+
+    if (cancelDecisionModal.source === 'restaurant') {
+      const realRequestId = cancelDecisionModal.requestId?.trim();
+      if (!realRequestId || realRequestId === cancelDecisionModal.orderId) {
+        const failMsg =
+          'تعذر تنفيذ قرار الإلغاء: معرف طلب الإلغاء الفعلي (request_id) غير متوفر لهذا الطلب.';
+        setCancelDecisionError(failMsg);
+        showToast(failMsg, 'error');
+        return;
+      }
+    }
+
     setIsSubmittingCancelDecision(true);
     setCancelDecisionError(null);
 
     try {
-      const trimmedNote = cancelAdminNote.trim() || undefined;
       let success = false;
       let errMessage: string | undefined;
-
-      const isApprove = cancelDecisionModal.decision === 'approve_cancel';
 
       if (cancelDecisionModal.source === 'delivery') {
         const res = await adminService.decideCancellation(
@@ -553,19 +594,11 @@ export const AdminOverview: React.FC = () => {
         success = res.success;
         errMessage = res.error;
       } else if (cancelDecisionModal.source === 'restaurant') {
-        if (!isApprove && !trimmedNote) {
-          const failMsg = 'يرجى كتابة سبب رفض طلب إلغاء طلب المطعم قبل التأكيد (إلزامي)';
-          setCancelDecisionError(failMsg);
-          showToast(failMsg, 'error');
-          setIsSubmittingCancelDecision(false);
-          return;
-        }
-
-        const targetRequestId = cancelDecisionModal.requestId || cancelDecisionModal.orderId;
+        const realRequestId = cancelDecisionModal.requestId!.trim();
         const res = await restaurantAdminService.decideCancellationRequest(
-          targetRequestId,
+          realRequestId,
           isApprove,
-          trimmedNote || (isApprove ? undefined : 'تم رفض الإلغاء بواسطة الإدارة')
+          trimmedNote
         );
         success = res.success;
         errMessage = res.error;
@@ -3006,62 +3039,68 @@ export const AdminOverview: React.FC = () => {
                         </div>
 
                         {canDecideThisCancel ? (
-                          <div className="flex items-center gap-1.5">
-                            <button
-                              type="button"
-                              disabled={isSubmittingCancelDecision}
-                              onClick={(e) =>
-                                handlePromptCancellationDecision(
-                                  {
-                                    orderId: ord.order_id || ord.id,
-                                    requestId: ord.request_id || ord.id,
-                                    orderNumber: ord.order_number,
-                                    source: ord.source,
-                                    customerName: ord.customer_name,
-                                    restaurantName: ord.restaurant_name,
-                                    requesterType: ord.requester_type,
-                                    requesterName: ord.requester_name,
-                                    requesterPhone: ord.requester_phone,
-                                    driverName: ord.driver_name,
-                                    reason: ord.reason,
-                                    decision: 'approve_cancel',
-                                  },
-                                  e
-                                )
-                              }
-                              className="px-2.5 py-1.5 rounded-xl bg-rose-600 hover:bg-rose-500 disabled:opacity-50 text-white font-black flex items-center gap-1 transition-colors cursor-pointer"
-                            >
-                              <Check className="w-3.5 h-3.5" />
-                              <span>قبول الإلغاء</span>
-                            </button>
-                            <button
-                              type="button"
-                              disabled={isSubmittingCancelDecision}
-                              onClick={(e) =>
-                                handlePromptCancellationDecision(
-                                  {
-                                    orderId: ord.order_id || ord.id,
-                                    requestId: ord.request_id || ord.id,
-                                    orderNumber: ord.order_number,
-                                    source: ord.source,
-                                    customerName: ord.customer_name,
-                                    restaurantName: ord.restaurant_name,
-                                    requesterType: ord.requester_type,
-                                    requesterName: ord.requester_name,
-                                    requesterPhone: ord.requester_phone,
-                                    driverName: ord.driver_name,
-                                    reason: ord.reason,
-                                    decision: 'reject_cancel',
-                                  },
-                                  e
-                                )
-                              }
-                              className="px-2.5 py-1.5 rounded-xl bg-emerald-600/20 hover:bg-emerald-600/30 disabled:opacity-50 text-emerald-300 border border-emerald-500/30 font-bold flex items-center gap-1 transition-colors cursor-pointer"
-                            >
-                              <X className="w-3.5 h-3.5" />
-                              <span>رفض الإلغاء</span>
-                            </button>
-                          </div>
+                          ord.source === 'restaurant' && !ord.request_id ? (
+                            <span className="text-[11px] text-amber-300 bg-amber-950/40 border border-amber-500/30 px-2.5 py-1 rounded-xl">
+                              معرف طلب الإلغاء (request_id) غير متاح — راجع قسم المطاعم
+                            </span>
+                          ) : (
+                            <div className="flex items-center gap-1.5">
+                              <button
+                                type="button"
+                                disabled={isSubmittingCancelDecision}
+                                onClick={(e) =>
+                                  handlePromptCancellationDecision(
+                                    {
+                                      orderId: ord.order_id || ord.id,
+                                      requestId: ord.request_id,
+                                      orderNumber: ord.order_number,
+                                      source: ord.source,
+                                      customerName: ord.customer_name,
+                                      restaurantName: ord.restaurant_name,
+                                      requesterType: ord.requester_type,
+                                      requesterName: ord.requester_name,
+                                      requesterPhone: ord.requester_phone,
+                                      driverName: ord.driver_name,
+                                      reason: ord.reason,
+                                      decision: 'approve_cancel',
+                                    },
+                                    e
+                                  )
+                                }
+                                className="px-2.5 py-1.5 rounded-xl bg-rose-600 hover:bg-rose-500 disabled:opacity-50 text-white font-black flex items-center gap-1 transition-colors cursor-pointer"
+                              >
+                                <Check className="w-3.5 h-3.5" />
+                                <span>قبول الإلغاء</span>
+                              </button>
+                              <button
+                                type="button"
+                                disabled={isSubmittingCancelDecision}
+                                onClick={(e) =>
+                                  handlePromptCancellationDecision(
+                                    {
+                                      orderId: ord.order_id || ord.id,
+                                      requestId: ord.request_id,
+                                      orderNumber: ord.order_number,
+                                      source: ord.source,
+                                      customerName: ord.customer_name,
+                                      restaurantName: ord.restaurant_name,
+                                      requesterType: ord.requester_type,
+                                      requesterName: ord.requester_name,
+                                      requesterPhone: ord.requester_phone,
+                                      driverName: ord.driver_name,
+                                      reason: ord.reason,
+                                      decision: 'reject_cancel',
+                                    },
+                                    e
+                                  )
+                                }
+                                className="px-2.5 py-1.5 rounded-xl bg-emerald-600/20 hover:bg-emerald-600/30 disabled:opacity-50 text-emerald-300 border border-emerald-500/30 font-bold flex items-center gap-1 transition-colors cursor-pointer"
+                              >
+                                <X className="w-3.5 h-3.5" />
+                                <span>رفض الإلغاء</span>
+                              </button>
+                            </div>
+                          )
                         ) : (
                           <span className="text-[10px] font-bold text-slate-400 bg-slate-900 px-2 py-1 rounded-lg border border-slate-800">
                             للعرض فقط — يتطلب صلاحية إدارة الطلبات
@@ -3952,48 +3991,69 @@ export const AdminOverview: React.FC = () => {
                           </div>
 
                           {canDecideCancel ? (
-                            <div className="flex flex-wrap items-center gap-2 pt-1">
-                              <button
-                                type="button"
-                                disabled={isSubmittingCancelDecision}
-                                onClick={() =>
-                                  handlePromptCancellationDecision({
-                                    orderId: ord.id,
-                                    orderNumber: ord.order_number || ord.id.slice(0, 8),
-                                    source: 'restaurant',
-                                    customerName: ord.customer_name || 'عميل مطاعم',
-                                    restaurantName: ord.restaurant_name || null,
-                                    driverName: (ord as any).driver_name || null,
-                                    reason: (ord as any).cancellation_reason,
-                                    decision: 'approve_cancel',
-                                  })
-                                }
-                                className="px-3.5 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 disabled:opacity-50 text-white font-black flex items-center gap-1.5 cursor-pointer"
-                              >
-                                <Check className="w-4 h-4" />
-                                <span>قبول الإلغاء</span>
-                              </button>
-                              <button
-                                type="button"
-                                disabled={isSubmittingCancelDecision}
-                                onClick={() =>
-                                  handlePromptCancellationDecision({
-                                    orderId: ord.id,
-                                    orderNumber: ord.order_number || ord.id.slice(0, 8),
-                                    source: 'restaurant',
-                                    customerName: ord.customer_name || 'عميل مطاعم',
-                                    restaurantName: ord.restaurant_name || null,
-                                    driverName: (ord as any).driver_name || null,
-                                    reason: (ord as any).cancellation_reason,
-                                    decision: 'reject_cancel',
-                                  })
-                                }
-                                className="px-3.5 py-2 rounded-xl bg-emerald-600/20 hover:bg-emerald-600/30 disabled:opacity-50 text-emerald-300 border border-emerald-500/30 font-bold flex items-center gap-1.5 cursor-pointer"
-                              >
-                                <X className="w-4 h-4" />
-                                <span>رفض الإلغاء وإعادة الطلب للتنفيذ</span>
-                              </button>
-                            </div>
+                            (() => {
+                              const resolvedRequestId =
+                                ord.cancellation_request_id ||
+                                commandData?.cancellationRequests?.find(
+                                  (c) =>
+                                    c.source === 'restaurant' &&
+                                    (c.order_id === ord.id || c.id === ord.id)
+                                )?.request_id ||
+                                undefined;
+                              if (!resolvedRequestId || resolvedRequestId === ord.id) {
+                                return (
+                                  <div className="text-[11px] text-amber-300 bg-amber-950/40 border border-amber-500/30 p-2.5 rounded-xl">
+                                    تعذر العثور على معرف طلب الإلغاء الحقيقي (request_id) لهذا الطلب؛ لا يمكن تنفيذ القرار بمعرف الطلب الأصلي.
+                                  </div>
+                                );
+                              }
+                              return (
+                                <div className="flex flex-wrap items-center gap-2 pt-1">
+                                  <button
+                                    type="button"
+                                    disabled={isSubmittingCancelDecision}
+                                    onClick={() =>
+                                      handlePromptCancellationDecision({
+                                        orderId: ord.id,
+                                        requestId: resolvedRequestId,
+                                        orderNumber: ord.order_number || ord.id.slice(0, 8),
+                                        source: 'restaurant',
+                                        customerName: ord.customer_name || 'عميل مطاعم',
+                                        restaurantName: ord.restaurant_name || null,
+                                        driverName: (ord as any).driver_name || null,
+                                        reason: (ord as any).cancellation_reason,
+                                        decision: 'approve_cancel',
+                                      })
+                                    }
+                                    className="px-3.5 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 disabled:opacity-50 text-white font-black flex items-center gap-1.5 cursor-pointer"
+                                  >
+                                    <Check className="w-4 h-4" />
+                                    <span>قبول الإلغاء</span>
+                                  </button>
+                                  <button
+                                    type="button"
+                                    disabled={isSubmittingCancelDecision}
+                                    onClick={() =>
+                                      handlePromptCancellationDecision({
+                                        orderId: ord.id,
+                                        requestId: resolvedRequestId,
+                                        orderNumber: ord.order_number || ord.id.slice(0, 8),
+                                        source: 'restaurant',
+                                        customerName: ord.customer_name || 'عميل مطاعم',
+                                        restaurantName: ord.restaurant_name || null,
+                                        driverName: (ord as any).driver_name || null,
+                                        reason: (ord as any).cancellation_reason,
+                                        decision: 'reject_cancel',
+                                      })
+                                    }
+                                    className="px-3.5 py-2 rounded-xl bg-emerald-600/20 hover:bg-emerald-600/30 disabled:opacity-50 text-emerald-300 border border-emerald-500/30 font-bold flex items-center gap-1.5 cursor-pointer"
+                                  >
+                                    <X className="w-4 h-4" />
+                                    <span>رفض الإلغاء وإعادة الطلب للتنفيذ</span>
+                                  </button>
+                                </div>
+                              );
+                            })()
                           ) : (
                             <div className="text-[11px] text-slate-400">
                               للعرض فقط — يتطلب صلاحية إدارة المطاعم لاتخاذ قرار الإلغاء.
@@ -4307,7 +4367,9 @@ export const AdminOverview: React.FC = () => {
 
               <div className="space-y-1.5">
                 <label className="text-xs font-bold text-slate-300 block">
-                  {cancelDecisionModal.source === 'restaurant' && cancelDecisionModal.decision === 'reject_cancel'
+                  {(cancelDecisionModal.source === 'delivery' ||
+                    cancelDecisionModal.source === 'restaurant') &&
+                  cancelDecisionModal.decision === 'reject_cancel'
                     ? 'سبب رفض طلب الإلغاء (إلزامي للتوثيق وإشعار مقدم الطلب) *:'
                     : 'ملاحظة الإدارة للسجل (اختياري):'}
                 </label>
@@ -4317,7 +4379,9 @@ export const AdminOverview: React.FC = () => {
                   onChange={(e) => setCancelAdminNote(e.target.value)}
                   disabled={isSubmittingCancelDecision}
                   placeholder={
-                    cancelDecisionModal.source === 'restaurant' && cancelDecisionModal.decision === 'reject_cancel'
+                    (cancelDecisionModal.source === 'delivery' ||
+                      cancelDecisionModal.source === 'restaurant') &&
+                    cancelDecisionModal.decision === 'reject_cancel'
                       ? 'اكتب سبب رفض طلب الإلغاء بشكل إلزامي...'
                       : 'أضف ملاحظة توضيحية تحفظ في سجل القرار...'
                   }
@@ -4348,9 +4412,15 @@ export const AdminOverview: React.FC = () => {
 
               <button
                 type="button"
-                disabled={isSubmittingCancelDecision}
+                disabled={
+                  isSubmittingCancelDecision ||
+                  (cancelDecisionModal.decision === 'reject_cancel' &&
+                    (cancelDecisionModal.source === 'delivery' ||
+                      cancelDecisionModal.source === 'restaurant') &&
+                    !cancelAdminNote.trim())
+                }
                 onClick={handleExecuteCancellationDecision}
-                className={`px-5 py-2.5 rounded-2xl text-white text-xs font-black flex items-center gap-2 cursor-pointer disabled:opacity-50 ${
+                className={`px-5 py-2.5 rounded-2xl text-white text-xs font-black flex items-center gap-2 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed ${
                   cancelDecisionModal.decision === 'approve_cancel'
                     ? 'bg-rose-600 hover:bg-rose-500'
                     : 'bg-emerald-600 hover:bg-emerald-500'

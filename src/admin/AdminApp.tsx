@@ -20,6 +20,7 @@ import { AdminAppAssets } from './components/AdminAppAssets';
 import { AdminInvoicesPurchasing } from './components/AdminInvoicesPurchasing';
 import { AdminPharmacyManagement } from './components/AdminPharmacyManagement';
 import { AdminRestaurantManagement } from './components/AdminRestaurantManagement';
+import { AdminCentralGeoOperations } from './components/AdminCentralGeoOperations';
 import { CheckCircle2, AlertTriangle, AlertCircle, Info, RefreshCw, ShieldCheck } from 'lucide-react';
 
 const SPLASH_STAGES = [
@@ -217,6 +218,11 @@ const AdminContent: React.FC = () => {
     switch (activeSection) {
       case 'overview':
         return <AdminOverview />;
+      case 'central_services':
+      case 'central_geo':
+      case 'central_pricing':
+      case 'central_drivers':
+        return <AdminCentralGeoOperations />;
       case 'delivery_drivers':
         return <AdminDeliveryDrivers />;
       case 'delivery_orders':

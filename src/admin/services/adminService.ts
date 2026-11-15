@@ -18,6 +18,7 @@ import {
   SystemSetting,
   AdminOverviewStats,
   AdminRole,
+  AdminPermission,
   DeliveryDriver,
   DriverActivityStatus,
   DriverActivityMeta,
@@ -264,13 +265,22 @@ export const adminService = {
   ): Promise<{ success: boolean; data: T[]; error?: string }> {
     let from = 0;
     const allData: T[] = [];
+    const seenIds = new Set<string>();
     while (true) {
       const { data, error } = await buildQueryForRange(from, from + pageSize - 1);
       if (error) {
         return { success: false, data: [], error: error.message || 'فشل جلب إحدى صفحات البيانات' };
       }
       const rows = (data || []) as T[];
-      allData.push(...rows);
+      for (const row of rows) {
+        const rowId = (row as any)?.id;
+        if (rowId !== undefined && rowId !== null) {
+          const key = String(rowId);
+          if (seenIds.has(key)) continue;
+          seenIds.add(key);
+        }
+        allData.push(row);
+      }
       if (rows.length < pageSize) {
         break;
       }
@@ -615,38 +625,7 @@ export const adminService = {
         }
       }
 
-      // Build date-filtered queries for all 3 order domains
-      let deliveryOrdersQuery = supabase
-        .from('delivery_orders')
-        .select('id, status, customer_phone, household_id, assigned_driver_id, created_at');
-      if (effectiveStartDate) {
-        deliveryOrdersQuery = deliveryOrdersQuery.gte('created_at', effectiveStartDate);
-      }
-      if (effectiveEndDate) {
-        deliveryOrdersQuery = deliveryOrdersQuery.lte('created_at', effectiveEndDate);
-      }
-
-      let pharmacyOrdersQuery = supabase
-        .from('pharmacy_orders')
-        .select('id, status, created_at');
-      if (effectiveStartDate) {
-        pharmacyOrdersQuery = pharmacyOrdersQuery.gte('created_at', effectiveStartDate);
-      }
-      if (effectiveEndDate) {
-        pharmacyOrdersQuery = pharmacyOrdersQuery.lte('created_at', effectiveEndDate);
-      }
-
-      let restaurantOrdersQuery = supabase
-        .from('restaurant_orders')
-        .select('id, status, customer_total, delivery_fee, fulfillment_route, created_at');
-      if (effectiveStartDate) {
-        restaurantOrdersQuery = restaurantOrdersQuery.gte('created_at', effectiveStartDate);
-      }
-      if (effectiveEndDate) {
-        restaurantOrdersQuery = restaurantOrdersQuery.lte('created_at', effectiveEndDate);
-      }
-
-      // Query auxiliary data in parallel
+      // Build date-filtered paginated queries for all 3 order domains and auxiliary tables
       const [
         rpcResult,
         deliveryOrdersRes,
@@ -668,27 +647,146 @@ export const adminService = {
           p_start_date: effectiveStartDate || null,
           p_end_date: effectiveEndDate || null,
         }),
-        deliveryOrdersQuery,
-        supabase
-          .from('delivery_drivers')
-          .select('id, user_id, is_active, status, is_available_for_work, availability_last_seen_at'),
+        this.fetchAllRowsPaged((from, to) => {
+          let q = supabase
+            .from('delivery_orders')
+            .select('id, status, customer_phone, household_id, assigned_driver_id, created_at')
+            .order('id', { ascending: true });
+          if (effectiveStartDate) q = q.gte('created_at', effectiveStartDate);
+          if (effectiveEndDate) q = q.lte('created_at', effectiveEndDate);
+          return q.range(from, to);
+        }, 500),
+        this.fetchAllRowsPaged(
+          (from, to) =>
+            supabase
+              .from('delivery_drivers')
+              .select('id, user_id, is_active, status, is_available_for_work, availability_last_seen_at')
+              .order('id', { ascending: true })
+              .range(from, to),
+          500
+        ),
         supabase.from('admin_users').select('*', { count: 'exact', head: true }).eq('is_active', true),
         supabase.from('global_products').select('*', { count: 'exact', head: true }),
         supabase.from('global_categories').select('*', { count: 'exact', head: true }),
-        supabase.from('admin_notifications').select('id, is_active'),
-        pharmacyOrdersQuery,
-        supabase
-          .from('pharmacy_delivery_orders')
-          .select('id, pharmacy_order_id, assigned_driver_id, cancellation_requested_at, cancellation_decision, status'),
-        supabase.from('pharmacy_pharmacies').select('id, is_active'),
-        supabase.from('pharmacy_delivery_area_settings').select('id, service_enabled'),
-        restaurantOrdersQuery,
-        supabase
-          .from('restaurant_delivery_orders')
-          .select('id, order_id, driver_user_id, status'),
-        supabase.from('restaurants').select('id, is_active'),
-        supabase.from('profiles').select('id, is_blocked, status'),
+        this.fetchAllRowsPaged(
+          (from, to) =>
+            supabase
+              .from('admin_notifications')
+              .select('id, is_active')
+              .order('id', { ascending: true })
+              .range(from, to),
+          500
+        ),
+        this.fetchAllRowsPaged((from, to) => {
+          let q = supabase
+            .from('pharmacy_orders')
+            .select('id, status, created_at')
+            .order('id', { ascending: true });
+          if (effectiveStartDate) q = q.gte('created_at', effectiveStartDate);
+          if (effectiveEndDate) q = q.lte('created_at', effectiveEndDate);
+          return q.range(from, to);
+        }, 500),
+        this.fetchAllRowsPaged(
+          (from, to) =>
+            supabase
+              .from('pharmacy_delivery_orders')
+              .select('id, pharmacy_order_id, assigned_driver_id, cancellation_requested_at, cancellation_decision, status')
+              .order('id', { ascending: true })
+              .range(from, to),
+          500
+        ),
+        this.fetchAllRowsPaged(
+          (from, to) =>
+            supabase
+              .from('pharmacy_pharmacies')
+              .select('id, is_active')
+              .order('id', { ascending: true })
+              .range(from, to),
+          500
+        ),
+        this.fetchAllRowsPaged(
+          (from, to) =>
+            supabase
+              .from('pharmacy_delivery_area_settings')
+              .select('id, service_enabled')
+              .order('id', { ascending: true })
+              .range(from, to),
+          500
+        ),
+        this.fetchAllRowsPaged((from, to) => {
+          let q = supabase
+            .from('restaurant_orders')
+            .select('id, status, customer_total, delivery_fee, fulfillment_route, created_at')
+            .order('id', { ascending: true });
+          if (effectiveStartDate) q = q.gte('created_at', effectiveStartDate);
+          if (effectiveEndDate) q = q.lte('created_at', effectiveEndDate);
+          return q.range(from, to);
+        }, 500),
+        this.fetchAllRowsPaged(
+          (from, to) =>
+            supabase
+              .from('restaurant_delivery_orders')
+              .select('id, order_id, driver_user_id, status')
+              .order('id', { ascending: true })
+              .range(from, to),
+          500
+        ),
+        this.fetchAllRowsPaged(
+          (from, to) =>
+            supabase
+              .from('restaurants')
+              .select('id, is_active')
+              .order('id', { ascending: true })
+              .range(from, to),
+          500
+        ),
+        this.fetchAllRowsPaged(
+          (from, to) =>
+            supabase
+              .from('profiles')
+              .select('id, is_blocked, status')
+              .order('id', { ascending: true })
+              .range(from, to),
+          500
+        ),
       ]);
+
+      // Fail explicitly if ANY paged query or exact count query failed (never swallow partial data as 0)
+      if (
+        !deliveryOrdersRes.success ||
+        !deliveryDriversRes.success ||
+        !adminNotificationsRes.success ||
+        !pharmacyOrdersRes.success ||
+        !pharmacyDeliveryOrdersRes.success ||
+        !pharmacyPharmaciesRes.success ||
+        !pharmacyAreasRes.success ||
+        !restaurantOrdersRes.success ||
+        !restaurantDeliveryOrdersRes.success ||
+        !restaurantsRes.success ||
+        !profilesRes.success ||
+        adminsCountRes.error ||
+        globalProductsCountRes.error ||
+        globalCategoriesCountRes.error
+      ) {
+        const firstErr =
+          deliveryOrdersRes.error ||
+          deliveryDriversRes.error ||
+          adminNotificationsRes.error ||
+          pharmacyOrdersRes.error ||
+          pharmacyDeliveryOrdersRes.error ||
+          pharmacyPharmaciesRes.error ||
+          pharmacyAreasRes.error ||
+          restaurantOrdersRes.error ||
+          restaurantDeliveryOrdersRes.error ||
+          restaurantsRes.error ||
+          profilesRes.error ||
+          adminsCountRes.error?.message ||
+          globalProductsCountRes.error?.message ||
+          globalCategoriesCountRes.error?.message ||
+          'فشل جلب إحدى صفحات المؤشرات';
+        console.warn('getOverviewStats incomplete verification failure:', firstErr);
+        return null;
+      }
 
       // ----------------------------------------------------------------------
       // Pharmacy Domain Aggregation with Strict Mutual Exclusivity
@@ -941,25 +1039,38 @@ export const adminService = {
       }
 
       // 2. Direct aggregation fallback from database
-      let invoicesQuery = supabase.from('invoices').select('total_price, created_at, date');
-      if (effectiveStartDate) {
-        invoicesQuery = invoicesQuery.gte('created_at', effectiveStartDate);
-      }
-      if (effectiveEndDate) {
-        invoicesQuery = invoicesQuery.lte('created_at', effectiveEndDate);
-      }
-
       const [
-        { count: totalHouseholds },
-        { count: totalMissingItems },
-        { data: invoicesData },
+        householdsRes,
+        missingItemsRes,
+        invoicesRes,
       ] = await Promise.all([
         supabase.from('households').select('*', { count: 'exact', head: true }),
         supabase.from('missing_items').select('*', { count: 'exact', head: true }),
-        invoicesQuery,
+        this.fetchAllRowsPaged((from, to) => {
+          let q = supabase
+            .from('invoices')
+            .select('id, total_price, created_at, date')
+            .order('id', { ascending: true });
+          if (effectiveStartDate) q = q.gte('created_at', effectiveStartDate);
+          if (effectiveEndDate) q = q.lte('created_at', effectiveEndDate);
+          return q.range(from, to);
+        }, 500),
       ]);
 
-      const sumInvoices = (invoicesData || []).reduce(
+      if (householdsRes.error || missingItemsRes.error || !invoicesRes.success) {
+        console.warn('getOverviewStats fallback aggregation error:', {
+          householdsError: householdsRes.error?.message,
+          missingItemsError: missingItemsRes.error?.message,
+          invoicesError: invoicesRes.error,
+        });
+        return null;
+      }
+
+      const totalHouseholds = householdsRes.count;
+      const totalMissingItems = missingItemsRes.count;
+      const invoicesData = invoicesRes.data || [];
+
+      const sumInvoices = invoicesData.reduce(
         (acc: number, cur: any) => acc + (Number(cur.total_price) || 0),
         0
       );
@@ -1050,60 +1161,116 @@ export const adminService = {
         adminUsersRes,
         notificationsRes,
       ] = await Promise.all([
-        supabase
-          .from('delivery_orders')
-          .select(
-            'id, order_number, customer_name, household_name, governorate_name, status, assigned_driver_id, total_amount, cancellation_reason, cancellation_requested_at, created_at, updated_at'
-          )
-          .order('created_at', { ascending: false })
-          .limit(200),
-        supabase
-          .from('delivery_drivers')
-          .select(
-            'id, user_id, full_name, phone, governorate_name, vehicle_type, status, is_active, id_card_front_path, id_card_back_path, driver_license_path, vehicle_license_path, created_at, updated_at'
-          )
-          .order('created_at', { ascending: false }),
-        supabase
-          .from('pharmacy_orders')
-          .select(
-            'id, order_number, user_id, prescription_title, requested_pharmacy_name, address_governorate_name, status, grand_total, delivery_fee, created_at, updated_at'
-          )
-          .order('created_at', { ascending: false })
-          .limit(200),
-        supabase
-          .from('pharmacy_delivery_orders')
-          .select(
-            'id, pharmacy_order_id, assigned_driver_id, cancellation_requested_at, cancellation_reason, cancellation_decision, created_at, updated_at'
-          ),
-        supabase
-          .from('restaurant_orders')
-          .select(
-            'id, order_number, customer_user_id, restaurant_id, fulfillment_route, status, restaurant_name_snapshot, restaurant_phone_snapshot, customer_name, customer_phone, delivery_address, delivery_governorate_name_snapshot, food_subtotal, discount_amount, delivery_fee, customer_total, cancellation_reason, created_at, updated_at'
-          )
-          .order('created_at', { ascending: false })
-          .limit(200),
-        supabase
-          .from('restaurant_delivery_orders')
-          .select(
-            'id, order_id, driver_user_id, status, driver_commission, assigned_at, picked_up_at, delivered_at, created_at, updated_at'
-          )
-          .order('created_at', { ascending: false })
-          .limit(200),
+        this.fetchAllRowsPaged(
+          (from, to) =>
+            supabase
+              .from('delivery_orders')
+              .select(
+                'id, order_number, customer_name, household_name, governorate_name, status, assigned_driver_id, total_amount, cancellation_reason, cancellation_requested_at, created_at, updated_at'
+              )
+              .order('id', { ascending: true })
+              .range(from, to),
+          500
+        ),
+        this.fetchAllRowsPaged(
+          (from, to) =>
+            supabase
+              .from('delivery_drivers')
+              .select(
+                'id, user_id, full_name, phone, governorate_name, vehicle_type, status, is_active, id_card_front_path, id_card_back_path, driver_license_path, vehicle_license_path, created_at, updated_at'
+              )
+              .order('id', { ascending: true })
+              .range(from, to),
+          500
+        ),
+        this.fetchAllRowsPaged(
+          (from, to) =>
+            supabase
+              .from('pharmacy_orders')
+              .select(
+                'id, order_number, user_id, prescription_title, requested_pharmacy_name, address_governorate_name, status, grand_total, delivery_fee, created_at, updated_at'
+              )
+              .order('id', { ascending: true })
+              .range(from, to),
+          500
+        ),
+        this.fetchAllRowsPaged(
+          (from, to) =>
+            supabase
+              .from('pharmacy_delivery_orders')
+              .select(
+                'id, pharmacy_order_id, assigned_driver_id, cancellation_requested_at, cancellation_reason, cancellation_decision, created_at, updated_at'
+              )
+              .order('id', { ascending: true })
+              .range(from, to),
+          500
+        ),
+        this.fetchAllRowsPaged(
+          (from, to) =>
+            supabase
+              .from('restaurant_orders')
+              .select(
+                'id, order_number, customer_user_id, restaurant_id, fulfillment_route, status, restaurant_name_snapshot, restaurant_phone_snapshot, customer_name, customer_phone, delivery_address, delivery_governorate_name_snapshot, food_subtotal, discount_amount, delivery_fee, customer_total, cancellation_reason, created_at, updated_at'
+              )
+              .order('id', { ascending: true })
+              .range(from, to),
+          500
+        ),
+        this.fetchAllRowsPaged(
+          (from, to) =>
+            supabase
+              .from('restaurant_delivery_orders')
+              .select(
+                'id, order_id, driver_user_id, status, driver_commission, assigned_at, picked_up_at, delivered_at, created_at, updated_at'
+              )
+              .order('id', { ascending: true })
+              .range(from, to),
+          500
+        ),
         supabase.rpc('admin_list_restaurant_cancellation_requests', { p_status: 'pending' }),
-        supabase
-          .from('profiles')
-          .select('id, full_name, email, phone, is_blocked, status, blocked_reason, blocked_at, updated_at')
-          .order('created_at', { ascending: false }),
-        supabase.from('admin_users').select('user_id, email'),
+        this.fetchAllRowsPaged(
+          (from, to) =>
+            supabase
+              .from('profiles')
+              .select('id, full_name, email, phone, is_blocked, status, blocked_reason, blocked_at, updated_at')
+              .order('id', { ascending: true })
+              .range(from, to),
+          500
+        ),
+        this.fetchAllRowsPaged(
+          (from, to) =>
+            supabase
+              .from('admin_users')
+              .select('id, user_id, email')
+              .order('id', { ascending: true })
+              .range(from, to),
+          500
+        ),
         this.getAdminNotifications(),
       ]);
 
-      if (deliveryOrdersRes.error && pharmacyOrdersRes.error && deliveryDriversRes.error && restaurantOrdersRes.error) {
+      const failedPagedQuery = [
+        { name: 'delivery_orders', res: deliveryOrdersRes },
+        { name: 'delivery_drivers', res: deliveryDriversRes },
+        { name: 'pharmacy_orders', res: pharmacyOrdersRes },
+        { name: 'pharmacy_delivery_orders', res: pharmacyDeliveryOrdersRes },
+        { name: 'restaurant_orders', res: restaurantOrdersRes },
+        { name: 'restaurant_delivery_orders', res: restaurantDeliveryOrdersRes },
+        { name: 'profiles', res: profilesRes },
+        { name: 'admin_users', res: adminUsersRes },
+      ].find((q) => !q.res.success);
+
+      if (failedPagedQuery) {
         return {
           data: null,
-          error:
-            deliveryOrdersRes.error.message ||
-            'تعذر جلب بيانات مركز المهام الإدارية من قاعدة البيانات',
+          error: `تعذر استكمال جلب بيانات ${failedPagedQuery.name} لمركز العمليات: ${failedPagedQuery.res.error || 'خطأ في قاعدة البيانات'}`,
+        };
+      }
+
+      if (restaurantCancellationsRes.error) {
+        return {
+          data: null,
+          error: `تعذر جلب طلبات إلغاء المطاعم: ${restaurantCancellationsRes.error.message}`,
         };
       }
 
@@ -1111,8 +1278,8 @@ export const adminService = {
       const dDrivers = (deliveryDriversRes.data || []) as any[];
       const pOrders = (pharmacyOrdersRes.data || []) as any[];
       const pDeliveryOrders = (pharmacyDeliveryOrdersRes.data || []) as any[];
-      const rOrders = (restaurantOrdersRes?.data || []) as any[];
-      const rDeliveryOrders = (restaurantDeliveryOrdersRes?.data || []) as any[];
+      const rOrders = (restaurantOrdersRes.data || []) as any[];
+      const rDeliveryOrders = (restaurantDeliveryOrdersRes.data || []) as any[];
       const rCancelRows = (restaurantCancellationsRes?.data || []) as any[];
       const profiles = (profilesRes.data || []) as any[];
       const adminUsers = (adminUsersRes.data || []) as any[];
@@ -1271,15 +1438,16 @@ export const adminService = {
 
       // Restaurant cancellation requests from authoritative RPC admin_list_restaurant_cancellation_requests
       for (const req of rCancelRows) {
-        const reqId = req.request_id || req.id;
-        const ordId = req.order_id || reqId;
+        const rawReqId =
+          req.request_id || (req.id && req.id !== req.order_id ? req.id : undefined);
+        const ordId = req.order_id || req.id;
         if (ordId) handledRestaurantCancelOrderIds.add(ordId);
 
         restaurantCancelCount++;
         cancellationRequests.push({
           id: ordId,
           order_id: ordId,
-          request_id: reqId,
+          request_id: rawReqId ? String(rawReqId) : undefined,
           order_number: req.order_number || `#${String(ordId).slice(0, 6)}`,
           source: 'restaurant',
           customer_name: req.customer_name || 'عميل مطعم',
@@ -1299,14 +1467,15 @@ export const adminService = {
         });
       }
 
-      // Fallback: Check restaurant_orders with status 'cancellation_pending'
+      // Fallback visibility only: Check restaurant_orders with status 'cancellation_pending'
+      // NEVER assign order ID (ro.id) as request_id; real request_id must come from admin_list_restaurant_cancellation_requests
       for (const ro of rOrders) {
         if (ro.status === 'cancellation_pending' && !handledRestaurantCancelOrderIds.has(ro.id)) {
           restaurantCancelCount++;
           cancellationRequests.push({
             id: ro.id,
             order_id: ro.id,
-            request_id: ro.id,
+            request_id: undefined,
             order_number: ro.order_number || `#${String(ro.id).slice(0, 6)}`,
             source: 'restaurant',
             customer_name: ro.customer_name || 'عميل مطعم',
@@ -1594,6 +1763,13 @@ export const adminService = {
           });
         }
       }
+
+      pendingDrivers.sort(
+        (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+      );
+      disabledAccounts.sort(
+        (a, b) => new Date(b.updated_at || 0).getTime() - new Date(a.updated_at || 0).getTime()
+      );
 
       const notifs = notificationsRes || [];
       const activeNotifsCount = notifs.filter((n) => Boolean(n.is_active)).length;
@@ -3131,16 +3307,31 @@ export const adminService = {
     if (!supabase) return [];
     try {
       const [notifsRes, viewsRes] = await Promise.all([
-        supabase
-          .from('admin_notifications')
-          .select('*')
-          .order('created_at', { ascending: false }),
-        supabase
-          .from('admin_notification_views')
-          .select('id, notification_id, user_id, household_id, dismissed_at, created_at'),
+        this.fetchAllRowsPaged(
+          (from, to) =>
+            supabase
+              .from('admin_notifications')
+              .select('*')
+              .order('id', { ascending: true })
+              .range(from, to),
+          500
+        ),
+        this.fetchAllRowsPaged(
+          (from, to) =>
+            supabase
+              .from('admin_notification_views')
+              .select('id, notification_id, user_id, household_id, dismissed_at, created_at')
+              .order('id', { ascending: true })
+              .range(from, to),
+          500
+        ),
       ]);
 
-      if (notifsRes.error) throw notifsRes.error;
+      if (!notifsRes.success) throw new Error(notifsRes.error || 'فشل جلب الإشعارات');
+      const sortedNotifs = [...(notifsRes.data || [])].sort(
+        (a: any, b: any) => new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime()
+      );
+      (notifsRes as any).data = sortedNotifs;
 
       const viewsByNotif = new Map<
         string,
@@ -3821,15 +4012,33 @@ export const adminService = {
     });
   },
 
-  async updateAdminRole(id: string, role: AdminRole, is_active: boolean): Promise<{ success: boolean; error?: string }> {
+  async updateAdminRole(
+    id: string,
+    role: AdminRole,
+    is_active: boolean,
+    custom_permissions?: AdminPermission[] | string[]
+  ): Promise<{ success: boolean; error?: string }> {
     if (!supabase) return { success: false, error: 'Supabase غير متصل' };
+    const updatePayload: any = {
+      role,
+      is_active,
+      updated_at: new Date().toISOString(),
+    };
+    if (custom_permissions !== undefined) {
+      updatePayload.custom_permissions = custom_permissions;
+    }
+
     const { error } = await supabase
       .from('admin_users')
-      .update({ role, is_active, updated_at: new Date().toISOString() })
+      .update(updatePayload)
       .eq('id', id);
 
     if (error) return { success: false, error: error.message };
-    await this.logAuditAction('ADMIN_ROLE_UPDATED', 'ADMIN', id, { role, is_active });
+    await this.logAuditAction('ADMIN_ROLE_UPDATED', 'ADMIN', id, {
+      role,
+      is_active,
+      ...(custom_permissions !== undefined ? { custom_permissions } : {}),
+    });
     return { success: true };
   },
 
@@ -5924,44 +6133,46 @@ export const adminService = {
     decisionNote?: string
   ): Promise<{ success: boolean; newStatus?: string; error?: string }> {
     if (!supabase) return { success: false, error: 'Supabase غير متصل' };
+    if (!orderId?.trim()) {
+      return { success: false, error: 'معرف الطلب مطلوب' };
+    }
+
+    const cleanNote = decisionNote?.trim() || '';
+    if (!approve && !cleanNote) {
+      return {
+        success: false,
+        error: 'يرجى كتابة سبب رفض طلب الإلغاء (إلزامي)',
+      };
+    }
 
     try {
-      // 1. Attempt admin_decide_cancellation (primary secured RPC)
-      let rpcRes = await supabase.rpc('admin_decide_cancellation', {
-        p_order_id: orderId,
-        p_approve: approve,
-        p_decision_note: decisionNote || null,
+      // Strictly call the authoritative RPC admin_decide_cancellation with ZERO fallbacks or direct table updates
+      const rpcRes = await supabase.rpc('admin_decide_cancellation', {
+        p_order_id: orderId.trim(),
+        p_approve: Boolean(approve),
+        p_decision_note: cleanNote || null,
       });
 
       if (rpcRes.error) {
-        console.warn('admin_decide_cancellation failed, attempting admin_resolve_cancellation fallback:', rpcRes.error);
-        const fallbackRes = await supabase.rpc('admin_resolve_cancellation', {
-          p_order_id: orderId,
-          p_approve: approve,
-          p_admin_notes: decisionNote || null,
-        });
+        return {
+          success: false,
+          error: rpcRes.error.message || 'فشل تنفيذ قرار الإلغاء عبر دالة قاعدة البيانات المعتمدة',
+        };
+      }
 
-        if (fallbackRes.error) {
-          console.warn('Both cancellation RPCs failed, attempting direct delivery_orders update fallback:', fallbackRes.error);
-          const nowIso = new Date().toISOString();
-          const expectedStatus = approve ? 'cancelled' : 'accepted';
-          const { error: directErr } = await supabase
-            .from('delivery_orders')
-            .update({
-              status: expectedStatus,
-              cancellation_decision_note: decisionNote || null,
-              cancellation_decided_at: nowIso,
-              updated_at: nowIso,
-            })
-            .eq('id', orderId);
-
-          if (directErr) {
-            throw new Error(fallbackRes.error.message || rpcRes.error.message);
-          }
-          rpcRes = { data: { new_status: expectedStatus }, error: null } as any;
-        } else {
-          rpcRes = fallbackRes;
-        }
+      if (
+        rpcRes.data &&
+        typeof rpcRes.data === 'object' &&
+        'success' in rpcRes.data &&
+        (rpcRes.data as any).success === false
+      ) {
+        return {
+          success: false,
+          error:
+            (rpcRes.data as any).error ||
+            (rpcRes.data as any).message ||
+            'رفضت دالة قاعدة البيانات تنفيذ قرار الإلغاء',
+        };
       }
 
       const expectedNewStatus = approve ? 'cancelled' : 'accepted';
@@ -5973,10 +6184,10 @@ export const adminService = {
       await this.logAuditAction(
         approve ? 'CANCELLATION_APPROVED' : 'CANCELLATION_REJECTED',
         'DELIVERY_ORDER',
-        orderId,
+        orderId.trim(),
         {
-          approve,
-          decision_note: decisionNote || null,
+          approve: Boolean(approve),
+          decision_note: cleanNote || null,
           new_status: actualNewStatus,
         }
       );
@@ -5989,101 +6200,17 @@ export const adminService = {
   },
 
   async adminCancelOrder(
-    orderId: string,
-    reason: string,
-    adminEmail?: string
+    _orderId: string,
+    _reason: string,
+    _adminEmail?: string
   ): Promise<{ success: boolean; error?: string }> {
-    if (!supabase) return { success: false, error: 'Supabase غير متصل' };
-
-    try {
-      // 1. Fetch current order details
-      const { data: orderData, error: orderErr } = await supabase
-        .from('delivery_orders')
-        .select('id, status, assigned_driver_id')
-        .eq('id', orderId)
-        .maybeSingle();
-
-      if (orderErr || !orderData) {
-        return { success: false, error: 'لم يتم العثور على الطلب المراد إلغاؤه' };
-      }
-
-      const previousStatus = orderData.status;
-
-      // 2. If order was cancellation_pending, call the standard RPC first
-      if (previousStatus === 'cancellation_pending') {
-        const res = await this.decideCancellation(orderId, true, reason);
-        if (res.success) return { success: true };
-      }
-
-      // 3. Update delivery_orders directly
-      const nowIso = new Date().toISOString();
-      const { error: updateErr } = await supabase
-        .from('delivery_orders')
-        .update({
-          status: 'cancelled',
-          cancellation_reason: reason,
-          cancellation_decision_note: reason,
-          cancellation_decided_at: nowIso,
-          updated_at: nowIso,
-        })
-        .eq('id', orderId);
-
-      if (updateErr) {
-        // Fallback to RPC if direct update had policy restriction
-        const rpcRes = await supabase.rpc('admin_decide_cancellation', {
-          p_order_id: orderId,
-          p_approve: true,
-          p_decision_note: reason,
-        });
-        if (rpcRes.error) {
-          throw new Error(rpcRes.error.message || updateErr.message);
-        }
-      }
-
-      // 4. Record entry in delivery_order_status_history
-      try {
-        await supabase.from('delivery_order_status_history').insert({
-          order_id: orderId,
-          old_status: previousStatus,
-          new_status: 'cancelled',
-          changed_by: adminEmail || 'الإدارة',
-          changed_by_role: 'ADMIN',
-          note: reason,
-          created_at: nowIso,
-        });
-      } catch (histErr) {
-        console.warn('Could not insert to delivery_order_status_history:', histErr);
-      }
-
-      // 5. Verify persistence in Supabase
-      const { data: verifiedOrder } = await supabase
-        .from('delivery_orders')
-        .select('id, status')
-        .eq('id', orderId)
-        .maybeSingle();
-
-      if (verifiedOrder && verifiedOrder.status !== 'cancelled') {
-        return { success: false, error: 'لم يتم اعتماد حالة الإلغاء في قاعدة البيانات' };
-      }
-
-      // 6. Log Audit
-      await this.logAuditAction(
-        'ORDER_CANCELLED_BY_ADMIN',
-        'DELIVERY_ORDER',
-        orderId,
-        {
-          order_id: orderId,
-          reason,
-          previous_status: previousStatus,
-          cancelled_by: adminEmail || 'ADMIN',
-        }
-      );
-
-      return { success: true };
-    } catch (err: any) {
-      console.error('Exception in adminCancelOrder:', err);
-      return { success: false, error: err?.message || 'فشل إلغاء الطلب' };
-    }
+    // No approved direct admin cancellation RPC exists for Home Delivery (`delivery_orders`).
+    // `admin_decide_cancellation` is strictly for pending cancellation requests, and direct table updates are prohibited.
+    return {
+      success: false,
+      error:
+        'الإلغاء الإداري المباشر لطلبات البيت غير مدعوم حاليًا لعدم توفر دالة قاعدة بيانات (RPC) معتمدة لهذا المسار، ولا يُسمح بالتعديل المباشر على جدول الطلبات.',
+    };
   },
 
   async getDeliveryDriversList(): Promise<Array<{ id: string; full_name: string; phone: string; is_active: boolean }>> {
@@ -7931,22 +8058,65 @@ export const adminService = {
         savedPrescriptionsRes,
         areasRes,
       ] = await Promise.all([
-        supabase
-          .from('pharmacy_orders')
-          .select(
-            'id, status, address_governorate_name, delivery_fee, medicines_total, grand_total'
-          ),
-        supabase
-          .from('pharmacy_delivery_orders')
-          .select('id, cancellation_requested_at, cancellation_decided_at'),
-        supabase.from('pharmacy_pharmacies').select('id, is_active'),
+        this.fetchAllRowsPaged(
+          (from, to) =>
+            supabase
+              .from('pharmacy_orders')
+              .select(
+                'id, status, address_governorate_name, delivery_fee, medicines_total, grand_total'
+              )
+              .order('id', { ascending: true })
+              .range(from, to),
+          500
+        ),
+        this.fetchAllRowsPaged(
+          (from, to) =>
+            supabase
+              .from('pharmacy_delivery_orders')
+              .select('id, cancellation_requested_at, cancellation_decided_at')
+              .order('id', { ascending: true })
+              .range(from, to),
+          500
+        ),
+        this.fetchAllRowsPaged(
+          (from, to) =>
+            supabase
+              .from('pharmacy_pharmacies')
+              .select('id, is_active')
+              .order('id', { ascending: true })
+              .range(from, to),
+          500
+        ),
         supabase.from('pharmacy_user_pharmacies').select('id', { count: 'exact', head: true }),
         supabase.from('pharmacy_saved_prescriptions').select('id', { count: 'exact', head: true }),
-        supabase.from('pharmacy_delivery_area_settings').select('id, service_enabled'),
+        this.fetchAllRowsPaged(
+          (from, to) =>
+            supabase
+              .from('pharmacy_delivery_area_settings')
+              .select('id, service_enabled')
+              .order('id', { ascending: true })
+              .range(from, to),
+          500
+        ),
       ]);
 
-      if (ordersRes.error) {
-        return { stats: emptyStats, error: ordersRes.error.message };
+      if (
+        !ordersRes.success ||
+        !deliveryOrdersRes.success ||
+        !pharmaciesRes.success ||
+        !areasRes.success ||
+        userPharmaciesRes.error ||
+        savedPrescriptionsRes.error
+      ) {
+        const errMessage =
+          ordersRes.error ||
+          deliveryOrdersRes.error ||
+          pharmaciesRes.error ||
+          areasRes.error ||
+          userPharmaciesRes.error?.message ||
+          savedPrescriptionsRes.error?.message ||
+          'تعذر جلب إحصاءات الصيدلية كاملة من قاعدة البيانات';
+        return { stats: emptyStats, error: errMessage };
       }
 
       const orders = ordersRes.data || [];
