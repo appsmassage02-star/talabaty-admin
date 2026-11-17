@@ -7,13 +7,13 @@ import {
   CentralMutationResult,
   CentralRestaurantSummary,
   CentralScopeLevel,
-  CentralSectionServiceAreaRecord,
   CentralServiceDefinition,
   CentralServiceType,
   DeliveryAreaTariff,
   DeliveryAreaTariffBatchInput,
   DeliveryAreaTariffInput,
   DeliveryDriver,
+  DeliverySystemSettings,
   DriverCoverageMutationInput,
   EffectiveTariffResolution,
   GeoArea,
@@ -69,7 +69,7 @@ const GEO_CENTER_COLUMNS =
   'id, governorate_id, name_ar, name_en, is_active, sort_order, source_code, admin_unit_type, classification_status, source_system, latitude, longitude, created_at, updated_at';
 
 const GEO_AREA_COLUMNS =
-  'id, governorate_id, center_id, name_ar, name_en, is_active, sort_order, admin_unit_type, classification_status, source_system, source_code, parent_area_id, latitude, longitude, created_at, updated_at';
+  'id, governorate_id, center_id, name_ar, name_en, is_active, sort_order, admin_unit_type, classification_status, source_system, source_code, latitude, longitude, created_at, updated_at';
 
 const TARIFF_COLUMNS =
   'id, service_type, delivery_owner, restaurant_id, scope_level, governorate_id, center_id, area_id, base_delivery_fee, admin_commission, driver_net_fee, customer_delivery_fee, is_free_delivery, free_delivery_cost_bearer, estimated_delivery_minutes, is_enabled, notes, created_at, updated_at';
@@ -410,7 +410,7 @@ export function validateTariffInput(
       governorate_id: input.governorate_id,
       center_id: input.center_id,
       area_id: input.area_id,
-      requireActiveGeo: Boolean(input.is_enabled),
+      requireActiveGeo: true,
     },
     lookups
   );
@@ -696,8 +696,7 @@ export function resolveEffectiveTariff(
     area_id?: string | null;
   },
   allTariffs: DeliveryAreaTariff[],
-  lookups: GeoLookups,
-  sectionServiceAreas: CentralSectionServiceAreaRecord[] = []
+  lookups: GeoLookups
 ): EffectiveTariffResolution {
   const trace: string[] = [];
   const gov = lookups.governoratesById.get(query.governorate_id);
@@ -768,20 +767,6 @@ export function resolveEffectiveTariff(
     trace.push(`المنطقة (${area.name_ar}) مفعلة وتابعة للتسلسل الهرمي.`);
   }
 
-  let sectionAreaMatchNote: string | null = null;
-  if (query.service_type === 'ready_food' && sectionServiceAreas.length > 0) {
-    const matchedSec = sectionServiceAreas.find((s) => {
-      if (!s.is_active) return false;
-      if (s.area_id && query.area_id && s.area_id === query.area_id) return true;
-      if (!s.area_id && s.center_id && query.center_id && s.center_id === query.center_id) return true;
-      if (!s.area_id && !s.center_id && s.governorate_id === query.governorate_id) return true;
-      return false;
-    });
-    sectionAreaMatchNote = matchedSec
-      ? `النطاق مفعّل أيضاً في جدول restaurant_section_service_areas (${getScopeLevelLabelAr(matchedSec.scope_level)}).`
-      : 'تنبيه تناسق: هذا النطاق غير مفعّل حالياً في جدول restaurant_section_service_areas (تغطية قسم المطاعم).';
-  }
-
   if (query.service_type === 'ready_food' && !query.restaurant_id) {
     return {
       isServiced: false,
@@ -789,7 +774,6 @@ export function resolveEffectiveTariff(
       matchedTariff: null,
       candidateTariffs: [],
       trace: [...trace, 'توقف: لم يتم تحديد restaurant_id لقسم ready_food.'],
-      sectionAreaMatchNote,
     };
   }
 
@@ -841,7 +825,6 @@ export function resolveEffectiveTariff(
       matchedScopeLevel: 'area',
       candidateTariffs: sortedCandidates,
       trace,
-      sectionAreaMatchNote,
     };
   }
   if (areaDisabled) {
@@ -856,7 +839,6 @@ export function resolveEffectiveTariff(
       matchedScopeLevel: 'center',
       candidateTariffs: sortedCandidates,
       trace,
-      sectionAreaMatchNote,
     };
   }
   if (centerDisabled) {
@@ -871,7 +853,6 @@ export function resolveEffectiveTariff(
       matchedScopeLevel: 'governorate',
       candidateTariffs: sortedCandidates,
       trace,
-      sectionAreaMatchNote,
     };
   }
 
@@ -883,7 +864,6 @@ export function resolveEffectiveTariff(
     matchedScopeLevel: null,
     candidateTariffs: sortedCandidates,
     trace,
-    sectionAreaMatchNote,
   };
 }
 
@@ -940,13 +920,20 @@ export function validateDriverCoverageInput(
     }
   }
 
+  if (!input.area_id) {
+    return {
+      valid: false,
+      error: 'يجب تحديد المنطقة الجغرافية (area_id من geo_areas) لربط تغطية المندوب وفق مخطط قاعدة البيانات.',
+    };
+  }
+
   const geoCheck = validateGeoHierarchySelection(
     {
-      scope_level: input.scope_level,
+      scope_level: 'area',
       governorate_id: input.governorate_id,
       center_id: input.center_id,
       area_id: input.area_id,
-      requireActiveGeo: Boolean(input.is_active),
+      requireActiveGeo: true,
     },
     lookups
   );
@@ -963,16 +950,13 @@ export function validateDriverCoverageInput(
     priority = p;
   }
 
-  const normRest = input.pool === 'restaurant' ? (input.restaurant_id || '').trim() || null : null;
+  const normRest = null;
 
   const duplicate = existingCoverages.find((c) => {
     if (input.id && c.id === input.id) return false;
     if (c.pool !== input.pool) return false;
     if (c.driver_id !== input.driver_id) return false;
-    if ((c.service_type || null) !== input.service_type) return false;
-    if (input.pool === 'restaurant' && (c.restaurant_id || null) !== normRest) return false;
-    if (c.governorate_id !== geoCheck.normalized!.governorate_id) return false;
-    if ((c.center_id || null) !== geoCheck.normalized!.center_id) return false;
+    if (input.pool === 'platform' && (c.service_type || null) !== input.service_type) return false;
     if ((c.area_id || null) !== geoCheck.normalized!.area_id) return false;
     return true;
   });
@@ -980,7 +964,7 @@ export function validateDriverCoverageInput(
   if (duplicate) {
     return {
       valid: false,
-      error: `تعارض تكرار: المندوب (${driver.full_name}) مرتبط بالفعل بنفس النطاق الجغرافي ونفس الخدمة (${duplicate.is_active ? 'مفعّل' : 'معطّل'}).`,
+      error: `تعارض تكرار: المندوب (${driver.full_name}) مرتبط بالفعل بنفس المنطقة الجغرافية ونفس الخدمة (${duplicate.is_active ? 'مفعّل' : 'معطّل'}).`,
     };
   }
 
@@ -1003,7 +987,6 @@ export function validateDriverCoverageInput(
 
 export function buildServiceSectionSummaries(
   tariffs: DeliveryAreaTariff[],
-  sectionServiceAreas: CentralSectionServiceAreaRecord[],
   lookups: GeoLookups
 ): ServiceSectionSummary[] {
   return CENTRAL_SERVICE_DEFINITIONS.map((def) => {
@@ -1066,42 +1049,6 @@ export function buildServiceSectionSummaries(
         });
       }
     });
-
-    // Check overlap/contradiction between restaurant_section_service_areas and delivery_area_tariffs for ready_food
-    if (def.type === 'ready_food') {
-      sectionServiceAreas.forEach((sec) => {
-        const label = [sec.governorate_name_ar, sec.center_name_ar, sec.area_name_ar].filter((v) => v && v !== '—').join(' / ') || sec.id;
-        const matchingTariff = svcTariffs.find(
-          (t) =>
-            t.governorate_id === sec.governorate_id &&
-            (t.center_id || null) === (sec.center_id || null) &&
-            (t.area_id || null) === (sec.area_id || null)
-        );
-        if (sec.is_active && !matchingTariff) {
-          discrepancies.push({
-            id: `sec-without-tariff-${sec.id}`,
-            service_type: 'ready_food',
-            scope_level: sec.scope_level,
-            governorate_id: sec.governorate_id,
-            center_id: sec.center_id,
-            area_id: sec.area_id,
-            location_label: label,
-            issue: 'مفعّل في restaurant_section_service_areas ولا توجد له تسعيرة مطابقة في delivery_area_tariffs.',
-          });
-        } else if (matchingTariff && sec.is_active !== matchingTariff.is_enabled) {
-          discrepancies.push({
-            id: `sec-tariff-mismatch-${sec.id}`,
-            service_type: 'ready_food',
-            scope_level: sec.scope_level,
-            governorate_id: sec.governorate_id,
-            center_id: sec.center_id,
-            area_id: sec.area_id,
-            location_label: label,
-            issue: `تعارض حالة التفعيل بين restaurant_section_service_areas (${sec.is_active ? 'مفعّل' : 'معطّل'}) و delivery_area_tariffs (${matchingTariff.is_enabled ? 'مفعّل' : 'معطّل'}).`,
-          });
-        }
-      });
-    }
 
     return {
       definition: def,
@@ -1377,6 +1324,168 @@ export function createCentralGeoDeliveryService(
       return { areas: res.data };
     },
 
+    async getGeoAreasByCenter(
+      centerId: string,
+      governorateId?: string,
+      onlyActive: boolean = true
+    ): Promise<{ areas: GeoArea[]; error?: string }> {
+      if (!client || !centerId) return { areas: [] };
+      const res = await fetchAllRowsPaged<GeoArea>((from, to) => {
+        let q = client
+          .from('geo_areas')
+          .select(GEO_AREA_COLUMNS)
+          .eq('center_id', centerId)
+          .order('sort_order', { ascending: true, nullsFirst: false })
+          .order('name_ar', { ascending: true });
+        if (governorateId) q = q.eq('governorate_id', governorateId);
+        if (onlyActive) q = q.eq('is_active', true);
+        return q.range(from, to);
+      });
+      if (!res.success) {
+        const formatted = formatCentralDbError({ code: res.errorCode, message: res.error }, 'geo_areas');
+        return { areas: [], error: formatted.message };
+      }
+      return { areas: res.data };
+    },
+
+    async getGeoAreasByGovernorate(
+      governorateId: string,
+      onlyActive: boolean = true
+    ): Promise<{ areas: GeoArea[]; error?: string }> {
+      if (!client || !governorateId) return { areas: [] };
+      const res = await fetchAllRowsPaged<GeoArea>((from, to) => {
+        let q = client
+          .from('geo_areas')
+          .select(GEO_AREA_COLUMNS)
+          .eq('governorate_id', governorateId)
+          .order('sort_order', { ascending: true, nullsFirst: false })
+          .order('name_ar', { ascending: true });
+        if (onlyActive) q = q.eq('is_active', true);
+        return q.range(from, to);
+      });
+      if (!res.success) {
+        const formatted = formatCentralDbError({ code: res.errorCode, message: res.error }, 'geo_areas');
+        return { areas: [], error: formatted.message };
+      }
+      return { areas: res.data };
+    },
+
+    async getGeoBoundariesForGovernorate(governorateId: string): Promise<{
+      governorate: GeoGovernorate | null;
+      centers: GeoCenter[];
+      areas: GeoArea[];
+      error?: string;
+    }> {
+      if (!client || !governorateId) {
+        return { governorate: null, centers: [], areas: [], error: 'معرف المحافظة غير محدد' };
+      }
+      const [govRes, centersRes, areasRes] = await Promise.all([
+        client
+          .from('geo_governorates')
+          .select(
+            'id, name_ar, name_en, code, is_active, latitude, longitude, centroid, boundary, boundary_source, boundary_updated_at'
+          )
+          .eq('id', governorateId)
+          .maybeSingle(),
+        fetchAllRowsPaged<GeoCenter>((from, to) =>
+          client
+            .from('geo_centers')
+            .select(
+              'id, governorate_id, name_ar, name_en, is_active, admin_unit_type, latitude, longitude, centroid, boundary, boundary_source, boundary_updated_at'
+            )
+            .eq('governorate_id', governorateId)
+            .order('sort_order', { ascending: true, nullsFirst: false })
+            .order('id', { ascending: true })
+            .range(from, to)
+        ),
+        fetchAllRowsPaged<GeoArea>((from, to) =>
+          client
+            .from('geo_areas')
+            .select(
+              'id, governorate_id, center_id, name_ar, name_en, is_active, admin_unit_type, classification_status, latitude, longitude, centroid, boundary, boundary_source, boundary_updated_at'
+            )
+            .eq('governorate_id', governorateId)
+            .order('sort_order', { ascending: true, nullsFirst: false })
+            .order('id', { ascending: true })
+            .range(from, to)
+        ),
+      ]);
+
+      const errs = [
+        govRes.error ? formatCentralDbError(govRes.error, 'geo_governorates').message : null,
+        !centersRes.success
+          ? formatCentralDbError({ code: centersRes.errorCode, message: centersRes.error }, 'geo_centers').message
+          : null,
+        !areasRes.success
+          ? formatCentralDbError({ code: areasRes.errorCode, message: areasRes.error }, 'geo_areas').message
+          : null,
+      ].filter(Boolean);
+
+      return {
+        governorate: (govRes.data as GeoGovernorate) || null,
+        centers: centersRes.success ? centersRes.data : [],
+        areas: areasRes.success ? areasRes.data : [],
+        error: errs.length > 0 ? errs.join(' | ') : undefined,
+      };
+    },
+
+    async getDeliverySystemSettings(): Promise<{
+      settings: DeliverySystemSettings | null;
+      error?: string;
+      errorCode?: string | null;
+      constraintHint?: string | null;
+    }> {
+      if (!client) return { settings: null, error: 'Supabase غير متصل' };
+      const { data, error } = await client
+        .from('delivery_system_settings')
+        .select(
+          'id, gps_required_for_new_orders, geofence_enforcement_enabled, driver_tracking_enabled, max_accepted_gps_accuracy_m, updated_by, updated_at'
+        )
+        .limit(1)
+        .maybeSingle();
+
+      if (error) {
+        const formatted = formatCentralDbError(error, 'delivery_system_settings');
+        return {
+          settings: null,
+          error: formatted.message,
+          errorCode: formatted.code,
+          constraintHint: formatted.constraintHint,
+        };
+      }
+
+      if (!data) {
+        return {
+          settings: null,
+          error: 'لا يوجد سجل إعدادات في جدول delivery_system_settings حالياً.',
+        };
+      }
+
+      return {
+        settings: {
+          id: data.id,
+          gps_required_for_new_orders:
+            data.gps_required_for_new_orders === null || data.gps_required_for_new_orders === undefined
+              ? null
+              : Boolean(data.gps_required_for_new_orders),
+          geofence_enforcement_enabled:
+            data.geofence_enforcement_enabled === null || data.geofence_enforcement_enabled === undefined
+              ? null
+              : Boolean(data.geofence_enforcement_enabled),
+          driver_tracking_enabled:
+            data.driver_tracking_enabled === null || data.driver_tracking_enabled === undefined
+              ? null
+              : Boolean(data.driver_tracking_enabled),
+          max_accepted_gps_accuracy_m:
+            data.max_accepted_gps_accuracy_m === null || data.max_accepted_gps_accuracy_m === undefined
+              ? null
+              : Number(data.max_accepted_gps_accuracy_m),
+          updated_by: data.updated_by || null,
+          updated_at: data.updated_at || null,
+        },
+      };
+    },
+
     computeGeoHierarchyCounts(
       governorates: GeoGovernorate[],
       centers: GeoCenter[],
@@ -1469,117 +1578,6 @@ export function createCentralGeoDeliveryService(
         return { restaurants: [], error: formatted.message };
       }
       return { restaurants: res.data };
-    },
-
-    async getRestaurantSectionServiceAreas(lookups?: GeoLookups): Promise<{
-      sectionAreas: CentralSectionServiceAreaRecord[];
-      error?: string;
-    }> {
-      if (!client) return { sectionAreas: [], error: 'Supabase غير متصل' };
-      const res = await fetchAllRowsPaged<any>((from, to) =>
-        client
-          .from('restaurant_section_service_areas')
-          .select('id, governorate_id, center_id, area_id, is_active, created_at, updated_at')
-          .order('id', { ascending: true })
-          .range(from, to)
-      );
-      if (!res.success) {
-        const formatted = formatCentralDbError(
-          { code: res.errorCode, message: res.error },
-          'restaurant_section_service_areas'
-        );
-        return { sectionAreas: [], error: formatted.message };
-      }
-
-      const missingAreaIds = res.data
-        .map((r) => r.area_id)
-        .filter((aid: string | null) => aid && !(lookups?.areasById.has(aid)));
-
-      const fetchedAreas = missingAreaIds.length > 0 ? await this.getGeoAreasByIds(missingAreaIds) : { areas: [] };
-      const extraAreaMap = new Map<string, GeoArea>();
-      fetchedAreas.areas.forEach((a) => extraAreaMap.set(a.id, a));
-
-      const records: CentralSectionServiceAreaRecord[] = res.data.map((r) => {
-        const scope_level: CentralScopeLevel = r.area_id ? 'area' : r.center_id ? 'center' : 'governorate';
-        const gov = r.governorate_id ? lookups?.governoratesById.get(r.governorate_id) : undefined;
-        const center = r.center_id ? lookups?.centersById.get(r.center_id) : undefined;
-        const area = r.area_id
-          ? lookups?.areasById.get(r.area_id) || extraAreaMap.get(r.area_id)
-          : undefined;
-
-        return {
-          id: r.id,
-          governorate_id: r.governorate_id || null,
-          center_id: r.center_id || null,
-          area_id: r.area_id || null,
-          is_active: Boolean(r.is_active),
-          created_at: r.created_at,
-          updated_at: r.updated_at,
-          scope_level,
-          governorate_name_ar: gov?.name_ar || (r.governorate_id ? r.governorate_id : '—'),
-          center_name_ar: center?.name_ar || (r.center_id ? r.center_id : '—'),
-          area_name_ar: area?.name_ar || (r.area_id ? r.area_id : '—'),
-        };
-      });
-
-      return { sectionAreas: records };
-    },
-
-    async toggleRestaurantSectionServiceArea(
-      id: string,
-      isActive: boolean
-    ): Promise<CentralMutationResult<CentralSectionServiceAreaRecord>> {
-      if (!client) return { success: false, error: 'Supabase غير متصل' };
-      const nowIso = new Date().toISOString();
-      const { data: updatedRows, error } = await client
-        .from('restaurant_section_service_areas')
-        .update({ is_active: Boolean(isActive), updated_at: nowIso })
-        .eq('id', id)
-        .select('id, governorate_id, center_id, area_id, is_active, created_at, updated_at');
-
-      if (error) {
-        const formatted = formatCentralDbError(error, 'restaurant_section_service_areas');
-        return {
-          success: false,
-          error: formatted.message,
-          errorCode: formatted.code,
-          constraintHint: formatted.constraintHint,
-        };
-      }
-      if (!updatedRows || updatedRows.length === 0) {
-        return {
-          success: false,
-          error: 'لم يتم تعديل السجل في restaurant_section_service_areas (تحقق من صلاحيات RLS للتحديث).',
-        };
-      }
-
-      // Mandatory Read-After-Write Verification
-      const { data: verified, error: verifyErr } = await client
-        .from('restaurant_section_service_areas')
-        .select('id, governorate_id, center_id, area_id, is_active, created_at, updated_at')
-        .eq('id', id)
-        .maybeSingle();
-
-      if (verifyErr || !verified || Boolean(verified.is_active) !== Boolean(isActive)) {
-        return {
-          success: false,
-          error: `تعذر تأكيد التحديث عند إعادة القراءة من restaurant_section_service_areas${verifyErr ? `: ${verifyErr.message}` : ''}.`,
-          verifiedFromDb: false,
-        };
-      }
-
-      await auditLogger('central_service_section.toggle', 'restaurant_section_service_areas', id, {
-        is_active: Boolean(isActive),
-      });
-
-      return {
-        success: true,
-        verifiedFromDb: true,
-        data: {
-          ...verified,
-          scope_level: verified.area_id ? 'area' : verified.center_id ? 'center' : 'governorate',
-        },
-      };
     },
 
     async getDeliveryAreaTariffs(
@@ -2133,11 +2131,13 @@ export function createCentralGeoDeliveryService(
       const enrichCoverage = (rawRows: any[], pool: CentralDriverCoveragePool): CentralDriverAreaCoverage[] =>
         rawRows.map((r) => {
           const drv = r.driver_id ? driverById.get(r.driver_id) : undefined;
-          const gov = r.governorate_id ? lookups?.governoratesById.get(r.governorate_id) : undefined;
-          const center = r.center_id ? lookups?.centersById.get(r.center_id) : undefined;
           const area = r.area_id ? lookups?.areasById.get(r.area_id) || extraAreaMap.get(r.area_id) : undefined;
+          const derivedGovId = r.governorate_id || area?.governorate_id || '';
+          const derivedCenterId = r.center_id || area?.center_id || null;
+          const gov = derivedGovId ? lookups?.governoratesById.get(derivedGovId) : undefined;
+          const center = derivedCenterId ? lookups?.centersById.get(derivedCenterId) : undefined;
           const rest = r.restaurant_id ? restaurantsById?.get(r.restaurant_id) : undefined;
-          const scope_level: CentralScopeLevel = r.area_id ? 'area' : r.center_id ? 'center' : 'governorate';
+          const scope_level: CentralScopeLevel = r.area_id ? 'area' : derivedCenterId ? 'center' : 'governorate';
 
           return {
             id: r.id,
@@ -2145,8 +2145,8 @@ export function createCentralGeoDeliveryService(
             driver_id: r.driver_id,
             restaurant_id: r.restaurant_id || null,
             service_type: r.service_type || (pool === 'restaurant' ? 'ready_food' : null),
-            governorate_id: r.governorate_id,
-            center_id: r.center_id || null,
+            governorate_id: derivedGovId,
+            center_id: derivedCenterId,
             area_id: r.area_id || null,
             scope_level,
             is_active: Boolean(r.is_active),
@@ -2161,8 +2161,8 @@ export function createCentralGeoDeliveryService(
             driver_is_available_for_work: drv?.is_available_for_work ?? null,
             driver_is_eligible: isDriverEligibleForOperations(drv),
             restaurant_name: rest?.name || (r.restaurant_id ? r.restaurant_id : null),
-            governorate_name_ar: gov?.name_ar || r.governorate_id || '—',
-            center_name_ar: center?.name_ar || (r.center_id ? r.center_id : '—'),
+            governorate_name_ar: gov?.name_ar || derivedGovId || '—',
+            center_name_ar: center?.name_ar || (derivedCenterId ? derivedCenterId : '—'),
             area_name_ar: area?.name_ar || (r.area_id ? r.area_id : '—'),
           };
         });
@@ -2209,31 +2209,29 @@ export function createCentralGeoDeliveryService(
         return { success: false, error: validation.error || 'بيانات ربط المندوب غير صالحة.' };
       }
 
-      const tableName =
-        validation.normalized.pool === 'platform'
-          ? 'delivery_driver_area_coverage'
-          : 'restaurant_driver_area_coverage';
+      const isPlatformPool = validation.normalized.pool === 'platform';
+      const tableName = isPlatformPool
+        ? 'delivery_driver_area_coverage'
+        : 'restaurant_driver_area_coverage';
 
       const nowIso = new Date().toISOString();
-      const dbRow: Record<string, any> = {
-        driver_id: validation.normalized.driver_id,
-        service_type: validation.normalized.service_type,
-        governorate_id: validation.normalized.governorate_id,
-        center_id: validation.normalized.center_id,
-        area_id: validation.normalized.area_id,
-        is_active: validation.normalized.is_active,
-        updated_at: nowIso,
-      };
-
-      if (validation.normalized.priority !== null) {
-        dbRow.priority = validation.normalized.priority;
-      }
-      if (validation.normalized.notes !== null) {
-        dbRow.notes = validation.normalized.notes;
-      }
-      if (validation.normalized.pool === 'restaurant' && validation.normalized.restaurant_id) {
-        dbRow.restaurant_id = validation.normalized.restaurant_id;
-      }
+      // Strictly write only columns verified to exist in Talabat Al-Bayt DEV
+      const dbRow: Record<string, any> = isPlatformPool
+        ? {
+            driver_id: validation.normalized.driver_id,
+            service_type: validation.normalized.service_type,
+            area_id: validation.normalized.area_id,
+            is_active: validation.normalized.is_active,
+            updated_at: nowIso,
+            ...(validation.normalized.priority !== null
+              ? { priority: validation.normalized.priority }
+              : {}),
+          }
+        : {
+            driver_id: validation.normalized.driver_id,
+            area_id: validation.normalized.area_id,
+            is_active: validation.normalized.is_active,
+          };
 
       let targetId = input.id;
       if (targetId) {
@@ -2309,8 +2307,10 @@ export function createCentralGeoDeliveryService(
         verifiedFromDb: true,
         data: {
           ...verified,
+          governorate_id: validation.normalized.governorate_id,
+          center_id: validation.normalized.center_id,
           pool: validation.normalized.pool,
-          scope_level: verified.area_id ? 'area' : verified.center_id ? 'center' : 'governorate',
+          scope_level: verified.area_id ? 'area' : 'governorate',
         },
       };
     },
@@ -2324,6 +2324,10 @@ export function createCentralGeoDeliveryService(
     ): Promise<CentralMutationResult<CentralDriverAreaCoverage>> {
       if (!client) return { success: false, error: 'Supabase غير متصل' };
 
+      const areaObj = coverage.area_id ? lookups.areasById.get(coverage.area_id) : undefined;
+      const effectiveGovId = coverage.governorate_id || areaObj?.governorate_id || '';
+      const effectiveCenterId = coverage.center_id || areaObj?.center_id || null;
+
       if (nextIsActive) {
         if (!isDriverEligibleForOperations(driver)) {
           return {
@@ -2333,9 +2337,9 @@ export function createCentralGeoDeliveryService(
         }
         const geoCheck = validateGeoHierarchySelection(
           {
-            scope_level: coverage.scope_level || (coverage.area_id ? 'area' : coverage.center_id ? 'center' : 'governorate'),
-            governorate_id: coverage.governorate_id,
-            center_id: coverage.center_id,
+            scope_level: coverage.area_id ? 'area' : effectiveCenterId ? 'center' : 'governorate',
+            governorate_id: effectiveGovId,
+            center_id: effectiveCenterId,
             area_id: coverage.area_id,
             requireActiveGeo: true,
           },
@@ -2349,9 +2353,14 @@ export function createCentralGeoDeliveryService(
       const tableName =
         pool === 'platform' ? 'delivery_driver_area_coverage' : 'restaurant_driver_area_coverage';
 
+      const updatePayload: Record<string, any> =
+        pool === 'platform'
+          ? { is_active: Boolean(nextIsActive), updated_at: new Date().toISOString() }
+          : { is_active: Boolean(nextIsActive) };
+
       const { data: updatedRows, error } = await client
         .from(tableName)
-        .update({ is_active: Boolean(nextIsActive), updated_at: new Date().toISOString() })
+        .update(updatePayload)
         .eq('id', coverage.id)
         .select('*');
 
@@ -2395,7 +2404,9 @@ export function createCentralGeoDeliveryService(
         data: {
           ...verified,
           pool,
-          scope_level: verified.area_id ? 'area' : verified.center_id ? 'center' : 'governorate',
+          governorate_id: effectiveGovId,
+          center_id: effectiveCenterId,
+          scope_level: verified.area_id ? 'area' : effectiveCenterId ? 'center' : 'governorate',
         },
       };
     },

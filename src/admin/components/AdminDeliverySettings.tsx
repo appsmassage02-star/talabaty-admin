@@ -43,7 +43,7 @@ import {
 } from 'lucide-react';
 
 export const AdminDeliverySettings: React.FC = () => {
-  const { hasPermission, showToast } = useAdmin();
+  const { hasPermission, showToast, navigateToSection } = useAdmin();
   const canManage = hasPermission('delivery.manage');
   const canView = hasPermission('delivery.view');
 
@@ -758,6 +758,36 @@ WHERE governorate_name = 'سوهاج';
         </div>
       </div>
 
+      {/* Legacy / Archived Notice Banner */}
+      <div className="p-4 sm:p-5 rounded-3xl bg-amber-950/35 border border-amber-500/35 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+        <div className="flex items-start gap-3">
+          <div className="w-10 h-10 rounded-2xl bg-amber-500/15 border border-amber-500/30 flex items-center justify-center text-amber-400 shrink-0">
+            <AlertTriangle className="w-5 h-5" />
+          </div>
+          <div className="space-y-1 text-xs">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="font-black text-amber-200 text-sm">
+                إعدادات قديمة / مؤرشفة (Legacy — للاطلاع المرجعي فقط)
+              </span>
+              <span className="px-2 py-0.5 rounded-lg bg-amber-500/15 border border-amber-500/30 text-amber-300 font-bold text-[10px]">
+                غير معتمدة للتشغيل المركزي
+              </span>
+            </div>
+            <p className="text-amber-100/80 leading-relaxed">
+              تم توحيد إدارة التغطية والتسعير عبر جدول <code className="font-mono text-emerald-300">delivery_area_tariffs</code> وجداول <code className="font-mono text-sky-300">geo_*</code> داخل قسم «إدارة المناطق والتوصيل والتسعير والعمالة» كمصدر وحيد معتمد، ولا يُعتمد على <code className="font-mono">delivery_governorate_settings</code> للتغطية والتسعير الحديث.
+            </p>
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={() => navigateToSection('central_pricing')}
+          className="px-4 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-xs font-black flex items-center gap-2 shrink-0 cursor-pointer transition shadow-md shadow-emerald-500/20"
+        >
+          <span>الانتقال إلى التسعير والتغطية المركزية</span>
+          <ArrowRight className="w-4 h-4 rotate-180" />
+        </button>
+      </div>
+
       {/* RLS or RPC Error Alert Notice */}
       {rpcErrorNotice && (
         <div className="p-4 rounded-2xl bg-rose-500/10 border border-rose-500/20 text-rose-400 flex items-start gap-3 animate-in fade-in">
@@ -889,7 +919,7 @@ WHERE governorate_name = 'سوهاج';
                 <div>
                   <h2 className="text-base font-bold text-white">إعدادات المحافظات وتخصيص الرسوم</h2>
                   <p className="text-[11px] text-slate-400">
-                    جدول <code className="text-emerald-400 font-mono">delivery_governorate_settings</code> (الأولوية القصوى لتطبيق طلبات البيت)
+                    جدول <code className="text-amber-400 font-mono">delivery_governorate_settings</code> (جدول قديم مؤرشف — لا يُعتمد عليه في التسعير والتغطية المركزية)
                   </p>
                 </div>
               </div>

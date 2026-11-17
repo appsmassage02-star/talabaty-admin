@@ -24,6 +24,7 @@ import {
   AlertTriangle,
   Bike,
   CheckCircle2,
+  Info,
   Navigation,
   Plus,
   Power,
@@ -70,9 +71,7 @@ export const CentralDriverCoverageTab: React.FC<CentralDriverCoverageTabProps> =
   restaurantCoverages,
   governorates,
   centers,
-  restaurants,
   lookups,
-  restaurantsById,
   driversError,
   platformCoverageError,
   restaurantCoverageError,
@@ -89,14 +88,12 @@ export const CentralDriverCoverageTab: React.FC<CentralDriverCoverageTabProps> =
   const [filterGovId, setFilterGovId] = useState('');
   const [filterCenterId, setFilterCenterId] = useState('');
   const [filterAreaId, setFilterAreaId] = useState('');
-  const [filterRestaurantId, setFilterRestaurantId] = useState('');
   const [filterCenterAreas, setFilterCenterAreas] = useState<GeoArea[]>([]);
 
   // Modal state
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingCoverage, setEditingCoverage] = useState<CentralDriverAreaCoverage | null>(null);
   const [formDriverId, setFormDriverId] = useState('');
-  const [formRestaurantId, setFormRestaurantId] = useState('');
   const [formServices, setFormServices] = useState<CentralServiceType[]>(['household_shortages']);
   const [formScope, setFormScope] = useState<CentralScopeLevel>('area');
   const [formGovId, setFormGovId] = useState('');
@@ -104,13 +101,21 @@ export const CentralDriverCoverageTab: React.FC<CentralDriverCoverageTabProps> =
   const [formAreaIds, setFormAreaIds] = useState<string[]>([]);
   const [formPriority, setFormPriority] = useState<string>('');
   const [formIsActive, setFormIsActive] = useState(true);
-  const [formNotes, setFormNotes] = useState('');
   const [modalAreas, setModalAreas] = useState<GeoArea[]>([]);
   const [isLoadingModalAreas, setIsLoadingModalAreas] = useState(false);
   const [modalError, setModalError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
-  const activeGovernorates = useMemo(() => governorates.filter((g) => g.is_active), [governorates]);
+  const activeGovernorates = useMemo(() => {
+    const active = governorates.filter((g) => g.is_active);
+    return [...active].sort((a, b) => {
+      const aSohag = (a.code || '').toUpperCase() === 'SHG' || a.name_ar.includes('سوهاج') ? 0 : 1;
+      const bSohag = (b.code || '').toUpperCase() === 'SHG' || b.name_ar.includes('سوهاج') ? 0 : 1;
+      if (aSohag !== bSohag) return aSohag - bSohag;
+      return (a.sort_order ?? 9999) - (b.sort_order ?? 9999);
+    });
+  }, [governorates]);
+
   const filterCenters = useMemo(
     () => (filterGovId ? centers.filter((c) => c.governorate_id === filterGovId && c.is_active) : []),
     [centers, filterGovId]
@@ -128,13 +133,7 @@ export const CentralDriverCoverageTab: React.FC<CentralDriverCoverageTabProps> =
       return;
     }
     centralGeoDeliveryService
-      .getGeoAreasPage({
-        governorateId: filterGovId || undefined,
-        centerId: filterCenterId,
-        activeFilter: 'active',
-        limit: 1000,
-        offset: 0,
-      })
+      .getGeoAreasByCenter(filterCenterId, filterGovId || undefined, true)
       .then((res) => {
         if (!cancelled) setFilterCenterAreas(res.areas);
       });
@@ -152,13 +151,7 @@ export const CentralDriverCoverageTab: React.FC<CentralDriverCoverageTabProps> =
     }
     setIsLoadingModalAreas(true);
     centralGeoDeliveryService
-      .getGeoAreasPage({
-        governorateId: formGovId || undefined,
-        centerId: formCenterId,
-        activeFilter: 'active',
-        limit: 1000,
-        offset: 0,
-      })
+      .getGeoAreasByCenter(formCenterId, formGovId || undefined, true)
       .then((res) => {
         if (!cancelled) setModalAreas(res.areas);
       })
@@ -189,29 +182,16 @@ export const CentralDriverCoverageTab: React.FC<CentralDriverCoverageTabProps> =
       if (filterGovId && c.governorate_id !== filterGovId) return false;
       if (filterCenterId && c.center_id !== filterCenterId) return false;
       if (filterAreaId && c.area_id !== filterAreaId) return false;
-      if (activePool === 'restaurant' && filterRestaurantId && c.restaurant_id !== filterRestaurantId) {
-        return false;
-      }
       if (!q) return true;
       return (
         (c.driver_name || '').toLowerCase().includes(q) ||
         (c.driver_phone || '').toLowerCase().includes(q) ||
         (c.governorate_name_ar || '').toLowerCase().includes(q) ||
         (c.center_name_ar || '').toLowerCase().includes(q) ||
-        (c.area_name_ar || '').toLowerCase().includes(q) ||
-        (c.restaurant_name || '').toLowerCase().includes(q)
+        (c.area_name_ar || '').toLowerCase().includes(q)
       );
     });
-  }, [
-    currentCoverages,
-    activePool,
-    filterService,
-    filterGovId,
-    filterCenterId,
-    filterAreaId,
-    filterRestaurantId,
-    searchQuery,
-  ]);
+  }, [currentCoverages, filterService, filterGovId, filterCenterId, filterAreaId, searchQuery]);
 
   const availabilityAnalysis = useMemo(() => {
     return filterDriversForCoverage(drivers, currentCoverages, {
@@ -220,31 +200,20 @@ export const CentralDriverCoverageTab: React.FC<CentralDriverCoverageTabProps> =
       governorate_id: filterGovId || undefined,
       center_id: filterCenterId || undefined,
       area_id: filterAreaId || undefined,
-      restaurant_id: activePool === 'restaurant' ? filterRestaurantId || undefined : undefined,
     });
-  }, [
-    drivers,
-    currentCoverages,
-    activePool,
-    filterService,
-    filterGovId,
-    filterCenterId,
-    filterAreaId,
-    filterRestaurantId,
-  ]);
+  }, [drivers, currentCoverages, activePool, filterService, filterGovId, filterCenterId, filterAreaId]);
 
   const openAssignModal = () => {
+    const defaultGov = filterGovId || activeGovernorates[0]?.id || '';
     setEditingCoverage(null);
     setFormDriverId('');
-    setFormRestaurantId('');
     setFormServices(activePool === 'restaurant' ? ['ready_food'] : ['household_shortages']);
     setFormScope('area');
-    setFormGovId(filterGovId || '');
+    setFormGovId(defaultGov);
     setFormCenterId(filterCenterId || '');
     setFormAreaIds(filterAreaId ? [filterAreaId] : []);
     setFormPriority('');
     setFormIsActive(true);
-    setFormNotes('');
     setModalError(null);
     setIsModalOpen(true);
   };
@@ -252,9 +221,8 @@ export const CentralDriverCoverageTab: React.FC<CentralDriverCoverageTabProps> =
   const openEditModal = (cov: CentralDriverAreaCoverage) => {
     setEditingCoverage(cov);
     setFormDriverId(cov.driver_id);
-    setFormRestaurantId(cov.restaurant_id || '');
-    setFormServices([(cov.service_type as CentralServiceType) || 'household_shortages']);
-    setFormScope(cov.scope_level || (cov.area_id ? 'area' : cov.center_id ? 'center' : 'governorate'));
+    setFormServices([(cov.service_type as CentralServiceType) || (activePool === 'restaurant' ? 'ready_food' : 'household_shortages')]);
+    setFormScope('area');
     setFormGovId(cov.governorate_id);
     setFormCenterId(cov.center_id || '');
     setFormAreaIds(cov.area_id ? [cov.area_id] : []);
@@ -262,7 +230,6 @@ export const CentralDriverCoverageTab: React.FC<CentralDriverCoverageTabProps> =
       cov.priority !== null && cov.priority !== undefined ? String(cov.priority) : ''
     );
     setFormIsActive(Boolean(cov.is_active));
-    setFormNotes(cov.notes || '');
     setModalError(null);
     setIsModalOpen(true);
   };
@@ -308,55 +275,72 @@ export const CentralDriverCoverageTab: React.FC<CentralDriverCoverageTabProps> =
       return;
     }
 
-    const inputs: DriverCoverageMutationInput[] = [];
-    const targetServices = activePool === 'restaurant' ? (['ready_food'] as CentralServiceType[]) : formServices;
-
-    if (formScope === 'area') {
-      for (const svc of targetServices) {
-        for (const areaId of formAreaIds) {
-          inputs.push({
-            id: editingCoverage?.id,
-            pool: activePool,
-            driver_id: formDriverId,
-            restaurant_id: activePool === 'restaurant' ? formRestaurantId || null : null,
-            service_type: svc,
-            scope_level: 'area',
-            governorate_id: formGovId,
-            center_id: formCenterId,
-            area_id: areaId,
-            is_active: formIsActive,
-            priority: formPriority || null,
-            notes: formNotes,
-          });
-        }
-      }
-    } else {
-      for (const svc of targetServices) {
-        inputs.push({
-          id: editingCoverage?.id,
-          pool: activePool,
-          driver_id: formDriverId,
-          restaurant_id: activePool === 'restaurant' ? formRestaurantId || null : null,
-          service_type: svc,
-          scope_level: formScope,
-          governorate_id: formGovId,
-          center_id: formScope === 'center' ? formCenterId : null,
-          area_id: null,
-          is_active: formIsActive,
-          priority: formPriority || null,
-          notes: formNotes,
-        });
-      }
-    }
-
     const areasMap = new Map<string, GeoArea>(lookups.areasById);
     modalAreas.forEach((a) => areasMap.set(a.id, a));
 
     setIsSubmitting(true);
     try {
+      let targetAreas: GeoArea[] = [];
+
+      if (formScope === 'area') {
+        targetAreas = formAreaIds
+          .map((aid) => areasMap.get(aid))
+          .filter((a): a is GeoArea => Boolean(a));
+        if (targetAreas.length !== formAreaIds.length) {
+          const fetched = await centralGeoDeliveryService.getGeoAreasByIds(formAreaIds);
+          fetched.areas.forEach((a) => areasMap.set(a.id, a));
+          targetAreas = formAreaIds
+            .map((aid) => areasMap.get(aid))
+            .filter((a): a is GeoArea => Boolean(a));
+        }
+      } else if (formScope === 'center') {
+        const res = await centralGeoDeliveryService.getGeoAreasByCenter(formCenterId, formGovId, true);
+        if (res.error) {
+          setModalError(res.error);
+          return;
+        }
+        res.areas.forEach((a) => areasMap.set(a.id, a));
+        targetAreas = res.areas;
+      } else {
+        const res = await centralGeoDeliveryService.getGeoAreasByGovernorate(formGovId, true);
+        if (res.error) {
+          setModalError(res.error);
+          return;
+        }
+        res.areas.forEach((a) => areasMap.set(a.id, a));
+        targetAreas = res.areas;
+      }
+
+      if (targetAreas.length === 0) {
+        setModalError('لا توجد مناطق مفعلة (is_active = true) داخل النطاق الجغرافي المختار لإسنادها.');
+        return;
+      }
+
+      const inputs: DriverCoverageMutationInput[] = [];
+      const targetServices =
+        activePool === 'restaurant' ? (['ready_food'] as CentralServiceType[]) : formServices;
+
+      for (const svc of targetServices) {
+        for (const area of targetAreas) {
+          inputs.push({
+            id: editingCoverage && formScope === 'area' ? editingCoverage.id : undefined,
+            pool: activePool,
+            driver_id: formDriverId,
+            restaurant_id: null,
+            service_type: svc,
+            scope_level: 'area',
+            governorate_id: area.governorate_id,
+            center_id: area.center_id,
+            area_id: area.id,
+            is_active: formIsActive,
+            priority: activePool === 'platform' ? formPriority || null : null,
+          });
+        }
+      }
+
       const result = await onSaveCoverageBatch(inputs, areasMap);
       if (result.errors.length > 0) {
-        setModalError(result.errors.join(' | '));
+        setModalError(result.errors.slice(0, 5).join(' | '));
       } else if (result.successCount > 0) {
         setIsModalOpen(false);
       }
@@ -378,7 +362,7 @@ export const CentralDriverCoverageTab: React.FC<CentralDriverCoverageTabProps> =
               إدارة عمالة التوصيل وتوزيعها على المناطق والخدمات
             </h3>
             <p className="text-xs text-slate-400 mt-0.5 leading-relaxed">
-              فصل صارم بين عمالة المنصة (<span className="font-mono text-emerald-300">delivery_driver_area_coverage</span>) وعمالة المطاعم (<span className="font-mono text-amber-300">restaurant_driver_area_coverage</span>)، مع استبعاد السائقين غير المعتمدين أو المعطلين.
+              فصل صارم بين عمالة المنصة (<span className="font-mono text-emerald-300">delivery_driver_area_coverage</span>) وعمالة المطاعم (<span className="font-mono text-amber-300">restaurant_driver_area_coverage</span>) عبر معرفات المناطق الحقيقية <span className="font-mono text-sky-300">area_id</span> في <span className="font-mono">geo_areas</span>، مع استبعاد السائقين غير المعتمدين أو المعطلين.
             </p>
           </div>
         </div>
@@ -414,7 +398,7 @@ export const CentralDriverCoverageTab: React.FC<CentralDriverCoverageTabProps> =
           type="button"
           onClick={() => {
             setActivePool('platform');
-            setFilterRestaurantId('');
+            setFilterService('');
           }}
           className={`p-4 rounded-2xl border text-right transition-all cursor-pointer flex items-center justify-between ${
             activePool === 'platform'
@@ -429,7 +413,7 @@ export const CentralDriverCoverageTab: React.FC<CentralDriverCoverageTabProps> =
               <span className="text-[11px] font-mono text-slate-400">delivery_driver_area_coverage</span>
             </div>
           </div>
-          <span className="px-2.5 py-1 rounded-xl bg-slate-950 border border-slate-800 font-mono text-xs font-bold text-emerald-300">
+          <span className="px-2.5 py-1 rounded-xl bg-slate-950 border border-slate-800 font-mono tabular-nums text-xs font-bold text-emerald-300">
             {platformCoverages.length}
           </span>
         </button>
@@ -453,7 +437,7 @@ export const CentralDriverCoverageTab: React.FC<CentralDriverCoverageTabProps> =
               <span className="text-[11px] font-mono text-slate-400">restaurant_driver_area_coverage</span>
             </div>
           </div>
-          <span className="px-2.5 py-1 rounded-xl bg-slate-950 border border-slate-800 font-mono text-xs font-bold text-amber-300">
+          <span className="px-2.5 py-1 rounded-xl bg-slate-950 border border-slate-800 font-mono tabular-nums text-xs font-bold text-amber-300">
             {restaurantCoverages.length}
           </span>
         </button>
@@ -539,55 +523,44 @@ export const CentralDriverCoverageTab: React.FC<CentralDriverCoverageTabProps> =
             ))}
           </select>
 
-          {activePool === 'restaurant' ? (
-            <select
-              value={filterRestaurantId}
-              onChange={(e) => setFilterRestaurantId(e.target.value)}
-              className="bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white"
-            >
-              <option value="">كل المطاعم</option>
-              {restaurants.map((r) => (
-                <option key={r.id} value={r.id}>
-                  {r.name}
-                </option>
-              ))}
-            </select>
-          ) : (
-            <select
-              value={filterAreaId}
-              disabled={!filterCenterId}
-              onChange={(e) => setFilterAreaId(e.target.value)}
-              className="bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white disabled:opacity-50"
-            >
-              <option value="">كل المناطق</option>
-              {filterCenterAreas.map((a) => (
-                <option key={a.id} value={a.id}>
-                  {a.name_ar}
-                </option>
-              ))}
-            </select>
-          )}
+          <select
+            value={filterAreaId}
+            disabled={!filterCenterId}
+            onChange={(e) => setFilterAreaId(e.target.value)}
+            className="bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white disabled:opacity-50"
+          >
+            <option value="">كل المناطق</option>
+            {filterCenterAreas.map((a) => (
+              <option key={a.id} value={a.id}>
+                {a.name_ar}
+              </option>
+            ))}
+          </select>
         </div>
 
         {/* Eligible vs Ineligible Drivers Summary */}
         <div className="grid grid-cols-1 sm:grid-cols-4 gap-3 text-xs pt-2 border-t border-slate-800/80">
           <div className="bg-slate-950/70 border border-slate-800 rounded-2xl p-3 flex items-center justify-between">
             <span className="text-slate-400">إجمالي السائقين المؤهلين</span>
-            <span className="font-mono font-black text-emerald-400 text-sm">{eligibleDrivers.length}</span>
+            <span className="font-mono tabular-nums font-black text-emerald-400 text-sm">
+              {eligibleDrivers.length}
+            </span>
           </div>
           <div className="bg-slate-950/70 border border-slate-800 rounded-2xl p-3 flex items-center justify-between">
             <span className="text-slate-400">غير مؤهلين (غير معتمد/معطل)</span>
-            <span className="font-mono font-black text-rose-400 text-sm">{ineligibleDrivers.length}</span>
+            <span className="font-mono tabular-nums font-black text-rose-400 text-sm">
+              {ineligibleDrivers.length}
+            </span>
           </div>
           <div className="bg-slate-950/70 border border-slate-800 rounded-2xl p-3 flex items-center justify-between">
             <span className="text-slate-400">مغطّون في النطاق المختار</span>
-            <span className="font-mono font-black text-sky-400 text-sm">
+            <span className="font-mono tabular-nums font-black text-sky-400 text-sm">
               {availabilityAnalysis.eligibleCoveredDrivers.length}
             </span>
           </div>
           <div className="bg-slate-950/70 border border-slate-800 rounded-2xl p-3 flex items-center justify-between">
             <span className="text-slate-400">متاحون للعمل الآن في النطاق</span>
-            <span className="font-mono font-black text-emerald-300 text-sm">
+            <span className="font-mono tabular-nums font-black text-emerald-300 text-sm">
               {availabilityAnalysis.eligibleCoveredDrivers.filter((x) => x.isCurrentlyAvailable).length}
             </span>
           </div>
@@ -681,9 +654,9 @@ export const CentralDriverCoverageTab: React.FC<CentralDriverCoverageTabProps> =
               <thead className="bg-slate-950/90 text-slate-400 border-b border-slate-800">
                 <tr>
                   <th className="p-3.5">المندوب</th>
-                  <th className="p-3.5">الخدمة {activePool === 'restaurant' ? 'والمطعم' : ''}</th>
-                  <th className="p-3.5">النطاق الجغرافي</th>
-                  <th className="p-3.5">الأولوية</th>
+                  <th className="p-3.5">الخدمة</th>
+                  <th className="p-3.5">النطاق الجغرافي (UUID)</th>
+                  {activePool === 'platform' && <th className="p-3.5">الأولوية</th>}
                   <th className="p-3.5">أهلية المندوب</th>
                   <th className="p-3.5">حالة التغطية</th>
                   <th className="p-3.5 text-center">الإجراءات</th>
@@ -700,9 +673,6 @@ export const CentralDriverCoverageTab: React.FC<CentralDriverCoverageTabProps> =
                       <span className="font-bold text-slate-200 block">
                         {getServiceLabelAr(c.service_type)}
                       </span>
-                      {c.restaurant_name && (
-                        <span className="text-[10px] text-amber-300 block">{c.restaurant_name}</span>
-                      )}
                     </td>
                     <td className="p-3.5">
                       <span className="text-[10px] text-sky-300 block">
@@ -718,9 +688,11 @@ export const CentralDriverCoverageTab: React.FC<CentralDriverCoverageTabProps> =
                           .join(' / ')}
                       </span>
                     </td>
-                    <td className="p-3.5 font-mono text-slate-300">
-                      {c.priority !== null && c.priority !== undefined ? c.priority : '—'}
-                    </td>
+                    {activePool === 'platform' && (
+                      <td className="p-3.5 font-mono tabular-nums text-slate-300">
+                        {c.priority !== null && c.priority !== undefined ? c.priority : '—'}
+                      </td>
+                    )}
                     <td className="p-3.5">
                       {c.driver_is_eligible ? (
                         <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
@@ -852,27 +824,18 @@ export const CentralDriverCoverageTab: React.FC<CentralDriverCoverageTabProps> =
                 </div>
 
                 {activePool === 'restaurant' && (
-                  <div>
-                    <label className="block font-bold text-slate-300 mb-1">المطعم المرتبط (اختياري/حسب القيد)</label>
-                    <select
-                      value={formRestaurantId}
-                      onChange={(e) => setFormRestaurantId(e.target.value)}
-                      className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2.5 text-white"
-                    >
-                      <option value="">بدون ربط بمطعم محدد / عام للمطاعم</option>
-                      {restaurants.map((r) => (
-                        <option key={r.id} value={r.id}>
-                          {r.name}
-                        </option>
-                      ))}
-                    </select>
+                  <div className="p-3 rounded-2xl bg-amber-950/30 border border-amber-500/30 text-[11px] text-amber-200 flex items-start gap-2">
+                    <Info className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+                    <span>
+                      جدول عمالة المطاعم (<span className="font-mono">restaurant_driver_area_coverage</span>) يربط معرف المندوب بمعرف المنطقة الجغرافية (<span className="font-mono">area_id</span>) فقط مع فصل كامل عن عمالة المنصة؛ بينما يتم عزل تسعيرة كل مطعم في <span className="font-mono">delivery_area_tariffs.restaurant_id</span>.
+                    </span>
                   </div>
                 )}
 
                 {/* Services Multi-select */}
                 <div className="p-3.5 rounded-2xl bg-slate-950/60 border border-slate-800 space-y-2">
                   <label className="block font-bold text-slate-300">
-                    أقسام الخدمات المغطاة {!editingCoverage ? '(يمكن اختيار أكثر من خدمة)' : ''} *
+                    أقسام الخدمات المغطاة {!editingCoverage && activePool === 'platform' ? '(يمكن اختيار أكثر من خدمة)' : ''} *
                   </label>
                   <div className="flex flex-wrap gap-2">
                     {CENTRAL_SERVICE_DEFINITIONS.filter((d) =>
@@ -897,12 +860,13 @@ export const CentralDriverCoverageTab: React.FC<CentralDriverCoverageTabProps> =
                   </div>
                 </div>
 
-                {/* Geo Hierarchy & Multi-Area */}
+                {/* Geo Hierarchy & Multi-Area / Center / Gov Expansion */}
                 <div className="p-3.5 rounded-2xl bg-slate-950/60 border border-slate-800 space-y-3">
                   <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                     <div>
-                      <label className="block font-bold text-slate-300 mb-1">مستوى التغطية *</label>
+                      <label className="block font-bold text-slate-300 mb-1">مستوى التخصيص *</label>
                       <select
+                        disabled={Boolean(editingCoverage)}
                         value={formScope}
                         onChange={(e) => {
                           const next = e.target.value as CentralScopeLevel;
@@ -914,11 +878,11 @@ export const CentralDriverCoverageTab: React.FC<CentralDriverCoverageTabProps> =
                             setFormAreaIds([]);
                           }
                         }}
-                        className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-white"
+                        className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-white disabled:opacity-60"
                       >
                         <option value="area">مناطق محددة</option>
-                        <option value="center">مركز / قسم كامل</option>
-                        <option value="governorate">محافظة كاملة</option>
+                        <option value="center">كافة مناطق مركز / قسم</option>
+                        <option value="governorate">كافة مناطق محافظة</option>
                       </select>
                     </div>
 
@@ -967,11 +931,17 @@ export const CentralDriverCoverageTab: React.FC<CentralDriverCoverageTabProps> =
                     )}
                   </div>
 
+                  {formScope !== 'area' && (
+                    <p className="text-[11px] text-sky-300">
+                      سيتم توسيع هذا الاختيار تلقائياً وحفظ سجل تغطية لكل منطقة مفعلة (<span className="font-mono">area_id</span>) تابعة للنطاق المختار وفق مخطط قاعدة البيانات.
+                    </p>
+                  )}
+
                   {formScope === 'area' && formCenterId && (
                     <div className="space-y-2 pt-2 border-t border-slate-800/80">
                       <div className="flex items-center justify-between">
                         <label className="font-bold text-slate-300">
-                          اختر المناطق ({formAreaIds.length} محدد) {isLoadingModalAreas ? '⏳' : ''}
+                          اختر المناطق ({formAreaIds.length} محدد) {isLoadingModalAreas ? '...' : ''}
                         </label>
                         {!editingCoverage && modalAreas.length > 0 && (
                           <button
@@ -1011,19 +981,21 @@ export const CentralDriverCoverageTab: React.FC<CentralDriverCoverageTabProps> =
                 </div>
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <div>
-                    <label className="block font-bold text-slate-300 mb-1">الأولوية (Priority - اختياري)</label>
-                    <input
-                      type="number"
-                      min="0"
-                      step="1"
-                      placeholder="مثال: 1"
-                      value={formPriority}
-                      onChange={(e) => setFormPriority(e.target.value)}
-                      className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white font-mono"
-                    />
-                  </div>
-                  <div className="flex items-center pt-5">
+                  {activePool === 'platform' && (
+                    <div>
+                      <label className="block font-bold text-slate-300 mb-1">الأولوية (Priority - اختياري)</label>
+                      <input
+                        type="number"
+                        min="0"
+                        step="1"
+                        placeholder="مثال: 1"
+                        value={formPriority}
+                        onChange={(e) => setFormPriority(e.target.value)}
+                        className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white font-mono"
+                      />
+                    </div>
+                  )}
+                  <div className="flex items-center pt-2 sm:pt-5">
                     <label className="flex items-center gap-2 font-bold text-slate-200 cursor-pointer">
                       <input
                         type="checkbox"
@@ -1034,17 +1006,6 @@ export const CentralDriverCoverageTab: React.FC<CentralDriverCoverageTabProps> =
                       <span>تفعيل ارتباط المندوب بهذه التغطية</span>
                     </label>
                   </div>
-                </div>
-
-                <div>
-                  <label className="block font-bold text-slate-300 mb-1">ملاحظات (اختياري)</label>
-                  <input
-                    type="text"
-                    value={formNotes}
-                    onChange={(e) => setFormNotes(e.target.value)}
-                    placeholder="ملاحظات إدارية حول توزيع المندوب..."
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white"
-                  />
                 </div>
               </div>
 

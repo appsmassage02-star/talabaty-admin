@@ -9,8 +9,6 @@ export type DisabledDisplayMode = 'show_disabled' | 'hide';
 export interface RestaurantSectionSettings {
   id: string;
   section_enabled: boolean;
-  global_max_delivery_radius_km: number;
-  no_driver_timeout_minutes: number;
   section_visibility?: SectionVisibility;
   disabled_display_mode?: DisabledDisplayMode;
   created_at: string;
@@ -32,20 +30,19 @@ export interface Restaurant {
   is_active: boolean;
   is_open: boolean;
   restaurant_delivery_enabled?: boolean | null;
-  max_delivery_radius_km: number;
   commission_percent: number;
   delivery_fee: number;
   food_money_settlement_mode: string;
   created_at: string;
   updated_at: string;
-  // Egyptian administrative address columns (public.restaurants)
+  // Egyptian administrative address columns referencing central geo_* UUIDs
   country_name?: string | null;
   governorate_id?: string | null;
   center_id?: string | null;
   area_id?: string | null;
   street?: string | null;
   detailed_address?: string | null;
-  // Enriched display helper names
+  // Enriched display helper names (derived strictly from geo_governorates, geo_centers, geo_areas)
   governorate_name?: string | null;
   center_name?: string | null;
   area_name?: string | null;
@@ -53,83 +50,6 @@ export interface Restaurant {
   categories?: RestaurantCategory[];
   items_count?: number;
   orders_count?: number;
-}
-
-export interface FoodGovernorate {
-  id: string;
-  country_name?: string;
-  name_ar: string;
-  name_en?: string | null;
-  code?: string | null;
-  is_active: boolean;
-  sort_order?: number;
-  created_at?: string;
-  updated_at?: string;
-}
-
-export interface FoodCenter {
-  id: string;
-  governorate_id: string;
-  name_ar: string;
-  name_en?: string | null;
-  is_active: boolean;
-  sort_order?: number;
-  source_code?: string | null;
-  created_at?: string;
-  updated_at?: string;
-}
-
-export interface FoodArea {
-  id: string;
-  governorate_id: string;
-  center_id: string;
-  name_ar: string;
-  name_en?: string | null;
-  is_active: boolean;
-  sort_order?: number;
-  created_at?: string;
-  updated_at?: string;
-}
-
-export interface RestaurantServiceArea {
-  id: string;
-  restaurant_id: string;
-  governorate_id: string;
-  center_id: string;
-  area_id: string;
-  is_active: boolean;
-  created_at?: string;
-  updated_at?: string;
-  // Joined / enriched display fields
-  delivery_fee?: number;
-  governorate_name_ar?: string;
-  center_name_ar?: string;
-  area_name_ar?: string;
-}
-
-export interface RestaurantSectionServiceArea {
-  id: string;
-  governorate_id?: string | null;
-  center_id?: string | null;
-  area_id?: string | null;
-  is_active: boolean;
-  created_at?: string;
-  updated_at?: string;
-  // Joined / enriched display helper fields
-  governorate_name_ar?: string;
-  center_name_ar?: string;
-  area_name_ar?: string;
-  level?: 'governorate' | 'center' | 'area';
-}
-
-export interface RestaurantAreaDeliveryFee {
-  id: string;
-  restaurant_id: string;
-  area_id: string;
-  delivery_fee: number;
-  is_active: boolean;
-  created_at?: string;
-  updated_at?: string;
 }
 
 export interface RestaurantCategory {

@@ -1,6 +1,5 @@
 import React, { useMemo, useState } from 'react';
 import {
-  CentralSectionServiceAreaRecord,
   CentralServiceType,
   DeliveryAreaTariff,
   ServiceSectionSummary,
@@ -8,7 +7,6 @@ import {
 import {
   getDeliveryOwnerLabelAr,
   getScopeLevelLabelAr,
-  getServiceLabelAr,
 } from '../../services/centralGeoDeliveryService';
 import {
   AlertTriangle,
@@ -19,21 +17,17 @@ import {
   Power,
   RefreshCw,
   ShieldAlert,
-  Store,
   XCircle,
 } from 'lucide-react';
 
 interface CentralServicesTabProps {
   summaries: ServiceSectionSummary[];
   tariffs: DeliveryAreaTariff[];
-  sectionServiceAreas: CentralSectionServiceAreaRecord[];
   tariffsError?: string | null;
-  sectionAreasError?: string | null;
   canManageAreas: boolean;
   canViewPricing: boolean;
   isBusy: boolean;
   onToggleTariffEnabled: (tariff: DeliveryAreaTariff, nextEnabled: boolean) => Promise<void>;
-  onToggleSectionAreaActive: (id: string, nextActive: boolean) => Promise<void>;
   onGoToPricingForService: (serviceType: CentralServiceType) => void;
   onRefresh: () => void;
 }
@@ -41,14 +35,11 @@ interface CentralServicesTabProps {
 export const CentralServicesTab: React.FC<CentralServicesTabProps> = ({
   summaries,
   tariffs,
-  sectionServiceAreas,
   tariffsError,
-  sectionAreasError,
   canManageAreas,
   canViewPricing,
   isBusy,
   onToggleTariffEnabled,
-  onToggleSectionAreaActive,
   onGoToPricingForService,
   onRefresh,
 }) => {
@@ -99,16 +90,6 @@ export const CentralServicesTab: React.FC<CentralServicesTabProps> = ({
           <div className="space-y-1">
             <p className="font-bold text-rose-300">تعذر قراءة جدول delivery_area_tariffs من قاعدة البيانات</p>
             <p className="font-mono text-[11px] text-rose-200/90 break-words">{tariffsError}</p>
-          </div>
-        </div>
-      )}
-
-      {sectionAreasError && (
-        <div className="bg-amber-950/40 border border-amber-500/40 rounded-2xl p-4 flex items-start gap-3 text-xs text-amber-200">
-          <AlertTriangle className="w-5 h-5 text-amber-400 shrink-0 mt-0.5" />
-          <div className="space-y-1">
-            <p className="font-bold text-amber-300">تعذر قراءة جدول restaurant_section_service_areas</p>
-            <p className="font-mono text-[11px] text-amber-200/90 break-words">{sectionAreasError}</p>
           </div>
         </div>
       )}
@@ -320,72 +301,6 @@ export const CentralServicesTab: React.FC<CentralServicesTabProps> = ({
               </div>
             )}
           </div>
-
-          {/* Compare with restaurant_section_service_areas specifically when inspecting ready_food */}
-          {selectedService === 'ready_food' && (
-            <div className="pt-4 border-t border-slate-800 space-y-3">
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-                <h5 className="text-xs font-black text-amber-300 flex items-center gap-2">
-                  <Store className="w-4 h-4" />
-                  <span>
-                    نطاقات تشغيل قسم المطاعم في جدول restaurant_section_service_areas ({sectionServiceAreas.length})
-                  </span>
-                </h5>
-                <span className="text-[11px] text-slate-400">
-                  للتأكد من عدم تعارض التشغيل بين جدول نطاق القسم وجدول delivery_area_tariffs
-                </span>
-              </div>
-
-              {sectionServiceAreas.length === 0 ? (
-                <div className="p-4 rounded-2xl bg-slate-950/50 border border-slate-800 text-xs text-slate-400">
-                  لا توجد سجلات في جدول <span className="font-mono">restaurant_section_service_areas</span>.
-                </div>
-              ) : (
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                  {sectionServiceAreas.map((sec) => (
-                    <div
-                      key={sec.id}
-                      className="bg-slate-950/70 border border-slate-800 rounded-2xl p-3.5 flex items-center justify-between gap-3"
-                    >
-                      <div className="min-w-0">
-                        <span className="text-[10px] font-bold text-slate-400 block">
-                          {getScopeLevelLabelAr(sec.scope_level)}
-                        </span>
-                        <span className="text-xs font-black text-white block truncate">
-                          {[sec.governorate_name_ar, sec.center_name_ar !== '—' ? sec.center_name_ar : null, sec.area_name_ar !== '—' ? sec.area_name_ar : null]
-                            .filter(Boolean)
-                            .join(' / ')}
-                        </span>
-                        <span
-                          className={`inline-block mt-1 px-2 py-0.5 rounded-full text-[10px] font-bold border ${
-                            sec.is_active
-                              ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30'
-                              : 'bg-rose-500/15 text-rose-300 border-rose-500/30'
-                          }`}
-                        >
-                          {sec.is_active ? 'مفعّل' : 'معطّل'}
-                        </span>
-                      </div>
-                      {canManageAreas && (
-                        <button
-                          type="button"
-                          disabled={isBusy}
-                          onClick={() => onToggleSectionAreaActive(sec.id, !sec.is_active)}
-                          className={`px-2.5 py-1.5 rounded-xl text-[11px] font-bold border cursor-pointer shrink-0 ${
-                            sec.is_active
-                              ? 'bg-rose-500/10 text-rose-300 border-rose-500/30 hover:bg-rose-500/20'
-                              : 'bg-emerald-500/10 text-emerald-300 border-emerald-500/30 hover:bg-emerald-500/20'
-                          }`}
-                        >
-                          {sec.is_active ? 'تعطيل' : 'تفعيل'}
-                        </button>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
         </div>
       )}
     </div>

@@ -22,6 +22,12 @@ export interface CentralServiceDefinition {
   supportsRestaurantOwner: boolean;
 }
 
+export interface GeoJsonGeometry {
+  type: 'Polygon' | 'MultiPolygon' | string;
+  coordinates: any;
+  crs?: any;
+}
+
 export interface GeoGovernorate {
   id: string;
   country_name?: string | null;
@@ -32,6 +38,10 @@ export interface GeoGovernorate {
   sort_order?: number | null;
   latitude?: number | null;
   longitude?: number | null;
+  centroid?: any | null;
+  boundary?: GeoJsonGeometry | null;
+  boundary_source?: string | null;
+  boundary_updated_at?: string | null;
   source_code?: string | null;
   source_system?: string | null;
   created_at?: string;
@@ -51,6 +61,10 @@ export interface GeoCenter {
   source_system?: string | null;
   latitude?: number | null;
   longitude?: number | null;
+  centroid?: any | null;
+  boundary?: GeoJsonGeometry | null;
+  boundary_source?: string | null;
+  boundary_updated_at?: string | null;
   created_at?: string;
   updated_at?: string;
 }
@@ -67,11 +81,24 @@ export interface GeoArea {
   classification_status?: string | null;
   source_system?: string | null;
   source_code?: string | null;
-  parent_area_id?: string | null;
   latitude?: number | null;
   longitude?: number | null;
+  centroid?: any | null;
+  boundary?: GeoJsonGeometry | null;
+  boundary_source?: string | null;
+  boundary_updated_at?: string | null;
   created_at?: string;
   updated_at?: string;
+}
+
+export interface DeliverySystemSettings {
+  id: string;
+  gps_required_for_new_orders: boolean | null;
+  geofence_enforcement_enabled: boolean | null;
+  driver_tracking_enabled: boolean | null;
+  max_accepted_gps_accuracy_m: number | null;
+  updated_by?: string | null;
+  updated_at?: string | null;
 }
 
 export interface GeoCenterAreaCount {
@@ -193,7 +220,6 @@ export interface EffectiveTariffResolution {
   matchedScopeLevel?: CentralScopeLevel | null;
   candidateTariffs: DeliveryAreaTariff[];
   trace: string[];
-  sectionAreaMatchNote?: string | null;
 }
 
 export interface CentralDriverAreaCoverage {

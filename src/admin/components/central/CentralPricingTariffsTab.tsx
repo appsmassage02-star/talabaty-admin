@@ -4,7 +4,6 @@ import {
   CentralFreeDeliveryCostBearer,
   CentralRestaurantSummary,
   CentralScopeLevel,
-  CentralSectionServiceAreaRecord,
   CentralServiceType,
   DeliveryAreaTariff,
   DeliveryAreaTariffBatchInput,
@@ -53,7 +52,6 @@ interface CentralPricingTariffsTabProps {
   governorates: GeoGovernorate[];
   centers: GeoCenter[];
   restaurants: CentralRestaurantSummary[];
-  sectionServiceAreas: CentralSectionServiceAreaRecord[];
   lookups: GeoLookups;
   restaurantsById: Map<string, CentralRestaurantSummary>;
   initialServiceFilter?: CentralServiceType | '';
@@ -78,7 +76,6 @@ export const CentralPricingTariffsTab: React.FC<CentralPricingTariffsTabProps> =
   governorates,
   centers,
   restaurants,
-  sectionServiceAreas,
   lookups,
   restaurantsById,
   initialServiceFilter = '',
@@ -151,8 +148,15 @@ export const CentralPricingTariffsTab: React.FC<CentralPricingTariffsTabProps> =
     customerDeliveryFee: number;
   } | null>(null);
 
-  // Active geo lists (strictly exclude inactive records from available selection)
-  const activeGovernorates = useMemo(() => governorates.filter((g) => g.is_active), [governorates]);
+  // Active geo lists (strictly exclude inactive records; surface Sohag first for launch scope convenience)
+  const activeGovernorates = useMemo(() => {
+    const active = governorates.filter((g) => g.is_active);
+    return [...active].sort((a, b) => {
+      const aSohag = a.name_ar?.includes('سوهاج') || a.code === 'SHG' ? 0 : 1;
+      const bSohag = b.name_ar?.includes('سوهاج') || b.code === 'SHG' ? 0 : 1;
+      return aSohag - bSohag;
+    });
+  }, [governorates]);
   const filterCenters = useMemo(
     () => (filterGovId ? centers.filter((c) => c.governorate_id === filterGovId) : centers),
     [centers, filterGovId]
@@ -406,8 +410,7 @@ export const CentralPricingTariffsTab: React.FC<CentralPricingTariffsTabProps> =
         area_id: simAreaId || null,
       },
       tariffs,
-      simLookups,
-      sectionServiceAreas
+      simLookups
     );
   }, [
     showSimulator,
@@ -419,7 +422,6 @@ export const CentralPricingTariffsTab: React.FC<CentralPricingTariffsTabProps> =
     simAreaId,
     tariffs,
     simLookups,
-    sectionServiceAreas,
   ]);
 
   const openCreateModal = () => {
@@ -886,9 +888,6 @@ export const CentralPricingTariffsTab: React.FC<CentralPricingTariffsTabProps> =
                     </span>
                   )}
                 </div>
-                {effectivePreview.sectionAreaMatchNote && (
-                  <span className="text-[11px] text-amber-300">{effectivePreview.sectionAreaMatchNote}</span>
-                )}
               </div>
 
               {effectivePreview.matchedTariff ? (

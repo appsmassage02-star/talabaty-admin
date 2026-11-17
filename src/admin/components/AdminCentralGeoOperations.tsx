@@ -4,12 +4,12 @@ import {
   CentralDriverAreaCoverage,
   CentralDriverCoveragePool,
   CentralRestaurantSummary,
-  CentralSectionServiceAreaRecord,
   CentralServiceType,
   DeliveryAreaTariff,
   DeliveryAreaTariffBatchInput,
   DeliveryAreaTariffInput,
   DeliveryDriver,
+  DeliverySystemSettings,
   DriverCoverageMutationInput,
   GeoArea,
   GeoCenter,
@@ -72,19 +72,19 @@ export const AdminCentralGeoOperations: React.FC = () => {
   >([]);
   const [restaurants, setRestaurants] = useState<CentralRestaurantSummary[]>([]);
   const [tariffs, setTariffs] = useState<DeliveryAreaTariff[]>([]);
-  const [sectionServiceAreas, setSectionServiceAreas] = useState<CentralSectionServiceAreaRecord[]>([]);
   const [drivers, setDrivers] = useState<DeliveryDriver[]>([]);
   const [platformCoverages, setPlatformCoverages] = useState<CentralDriverAreaCoverage[]>([]);
   const [restaurantCoverages, setRestaurantCoverages] = useState<CentralDriverAreaCoverage[]>([]);
+  const [deliverySystemSettings, setDeliverySystemSettings] = useState<DeliverySystemSettings | null>(null);
 
   // Errors per data source (truthful DB error propagation)
   const [geoError, setGeoError] = useState<string | null>(null);
   const [tariffsError, setTariffsError] = useState<string | null>(null);
   const [tariffsConstraintHint, setTariffsConstraintHint] = useState<string | null>(null);
-  const [sectionAreasError, setSectionAreasError] = useState<string | null>(null);
   const [driversError, setDriversError] = useState<string | null>(null);
   const [platformCoverageError, setPlatformCoverageError] = useState<string | null>(null);
   const [restaurantCoverageError, setRestaurantCoverageError] = useState<string | null>(null);
+  const [deliverySystemSettingsError, setDeliverySystemSettingsError] = useState<string | null>(null);
 
   const [pricingInitialService, setPricingInitialService] = useState<CentralServiceType | ''>('');
 
@@ -100,10 +100,10 @@ export const AdminCentralGeoOperations: React.FC = () => {
     setGeoError(null);
     setTariffsError(null);
     setTariffsConstraintHint(null);
-    setSectionAreasError(null);
     setDriversError(null);
     setPlatformCoverageError(null);
     setRestaurantCoverageError(null);
+    setDeliverySystemSettingsError(null);
 
     try {
       const [govRes, centerRes, lightAreasRes, restRes] = await Promise.all([
@@ -127,10 +127,10 @@ export const AdminCentralGeoOperations: React.FC = () => {
       const restMap = new Map<string, CentralRestaurantSummary>();
       restRes.restaurants.forEach((r) => restMap.set(r.id, r));
 
-      const [tariffsRes, secAreasRes, fleetRes] = await Promise.all([
+      const [tariffsRes, fleetRes, sysSettingsRes] = await Promise.all([
         centralGeoDeliveryService.getDeliveryAreaTariffs(baseLookups, restMap),
-        centralGeoDeliveryService.getRestaurantSectionServiceAreas(baseLookups),
         centralGeoDeliveryService.getDriversAndCoverage(baseLookups, restMap),
+        centralGeoDeliveryService.getDeliverySystemSettings(),
       ]);
 
       if (tariffsRes.error) {
@@ -139,15 +139,17 @@ export const AdminCentralGeoOperations: React.FC = () => {
       }
       setTariffs(tariffsRes.tariffs);
 
-      if (secAreasRes.error) setSectionAreasError(secAreasRes.error);
-      setSectionServiceAreas(secAreasRes.sectionAreas);
-
       if (fleetRes.driversError) setDriversError(fleetRes.driversError);
       if (fleetRes.platformCoverageError) setPlatformCoverageError(fleetRes.platformCoverageError);
       if (fleetRes.restaurantCoverageError) setRestaurantCoverageError(fleetRes.restaurantCoverageError);
       setDrivers(fleetRes.drivers);
       setPlatformCoverages(fleetRes.platformCoverages);
       setRestaurantCoverages(fleetRes.restaurantCoverages);
+
+      if (sysSettingsRes.error) {
+        setDeliverySystemSettingsError(sysSettingsRes.error);
+      }
+      setDeliverySystemSettings(sysSettingsRes.settings);
     } catch (e: any) {
       setGeoError(e?.message || 'حدث خطأ غير متوقع أثناء تحميل البيانات المركزية');
     } finally {
@@ -176,8 +178,8 @@ export const AdminCentralGeoOperations: React.FC = () => {
   );
 
   const serviceSummaries = useMemo(
-    () => buildServiceSectionSummaries(tariffs, sectionServiceAreas, baseLookups),
-    [tariffs, sectionServiceAreas, baseLookups]
+    () => buildServiceSectionSummaries(tariffs, baseLookups),
+    [tariffs, baseLookups]
   );
 
   // Handlers
@@ -300,25 +302,6 @@ export const AdminCentralGeoOperations: React.FC = () => {
         nextEnabled ? 'تم تفعيل التسعيرة وتأكيدها من قاعدة البيانات' : 'تم تعطيل التسعيرة وتأكيدها من قاعدة البيانات',
         'success'
       );
-      await loadAllCentralData();
-    } finally {
-      setIsMutating(false);
-    }
-  };
-
-  const handleToggleSectionAreaActive = async (id: string, nextActive: boolean) => {
-    if (!canManageAreas) {
-      showToast('ليس لديك صلاحية إدارة تغطية الأقسام (central_areas.manage)', 'error');
-      return;
-    }
-    setIsMutating(true);
-    try {
-      const res = await centralGeoDeliveryService.toggleRestaurantSectionServiceArea(id, nextActive);
-      if (!res.success) {
-        showToast(res.error || 'فشل تحديث نطاق عمل القسم', 'error');
-        return;
-      }
-      showToast('تم تحديث نطاق القسم وتأكيد الحفظ من قاعدة البيانات', 'success');
       await loadAllCentralData();
     } finally {
       setIsMutating(false);
@@ -572,14 +555,11 @@ export const AdminCentralGeoOperations: React.FC = () => {
         <CentralServicesTab
           summaries={serviceSummaries}
           tariffs={tariffs}
-          sectionServiceAreas={sectionServiceAreas}
           tariffsError={tariffsError}
-          sectionAreasError={sectionAreasError}
           canManageAreas={canManageAreas}
           canViewPricing={canViewPricing}
           isBusy={isLoading || isMutating}
           onToggleTariffEnabled={handleToggleTariffEnabled}
-          onToggleSectionAreaActive={handleToggleSectionAreaActive}
           onGoToPricingForService={(svc) => {
             setPricingInitialService(svc);
             navigateToSection('central_pricing');
@@ -593,6 +573,8 @@ export const AdminCentralGeoOperations: React.FC = () => {
           govCounts={geoStats.byGovernorate}
           centerCounts={geoStats.byCenter}
           geoTotals={geoStats.totals}
+          deliverySystemSettings={deliverySystemSettings}
+          deliverySystemSettingsError={deliverySystemSettingsError}
           onRefresh={loadAllCentralData}
           isLoadingBase={isLoading}
         />
@@ -602,7 +584,6 @@ export const AdminCentralGeoOperations: React.FC = () => {
           governorates={governorates}
           centers={centers}
           restaurants={restaurants}
-          sectionServiceAreas={sectionServiceAreas}
           lookups={baseLookups}
           restaurantsById={restaurantsById}
           initialServiceFilter={pricingInitialService}
