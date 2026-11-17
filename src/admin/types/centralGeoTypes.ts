@@ -4,6 +4,8 @@
  * Strictly isolated from legacy food_* and delivery_governorate_settings tables.
  */
 
+export const LAUNCH_SCOPE_GOVERNORATE_CODES: readonly string[] = ['SHG'];
+
 export type CentralServiceType = 'household_shortages' | 'pharmacy' | 'ready_food';
 
 export type CentralDeliveryOwner = 'platform' | 'restaurant';
@@ -263,20 +265,6 @@ export interface DriverCoverageMutationInput {
   is_active: boolean;
   priority?: number | string | null;
   notes?: string | null;
-}
-
-export interface CentralSectionServiceAreaRecord {
-  id: string;
-  governorate_id?: string | null;
-  center_id?: string | null;
-  area_id?: string | null;
-  is_active: boolean;
-  created_at?: string;
-  updated_at?: string;
-  scope_level: CentralScopeLevel;
-  governorate_name_ar?: string | null;
-  center_name_ar?: string | null;
-  area_name_ar?: string | null;
 }
 
 export interface ServiceSectionDiscrepancy {

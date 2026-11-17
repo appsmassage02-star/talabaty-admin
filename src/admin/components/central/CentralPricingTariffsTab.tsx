@@ -21,8 +21,10 @@ import {
   detectTariffConflicts,
   getDeliveryOwnerLabelAr,
   getFreeDeliveryBearerLabelAr,
+  getLaunchScopeGovernorates,
   getScopeLevelLabelAr,
   getServiceLabelAr,
+  isLaunchScopeGovernorate,
   previewGeneratedTariffValues,
   resolveEffectiveTariff,
   validateTariffInput,
@@ -148,15 +150,11 @@ export const CentralPricingTariffsTab: React.FC<CentralPricingTariffsTabProps> =
     customerDeliveryFee: number;
   } | null>(null);
 
-  // Active geo lists (strictly exclude inactive records; surface Sohag first for launch scope convenience)
-  const activeGovernorates = useMemo(() => {
-    const active = governorates.filter((g) => g.is_active);
-    return [...active].sort((a, b) => {
-      const aSohag = a.name_ar?.includes('سوهاج') || a.code === 'SHG' ? 0 : 1;
-      const bSohag = b.name_ar?.includes('سوهاج') || b.code === 'SHG' ? 0 : 1;
-      return aSohag - bSohag;
-    });
-  }, [governorates]);
+  // Launch-scope governorates (strictly enforces Sohag launch scope while keeping catalog schema extensible)
+  const launchGovernorates = useMemo(
+    () => getLaunchScopeGovernorates(governorates),
+    [governorates]
+  );
   const filterCenters = useMemo(
     () => (filterGovId ? centers.filter((c) => c.governorate_id === filterGovId) : centers),
     [centers, filterGovId]
@@ -432,7 +430,7 @@ export const CentralPricingTariffsTab: React.FC<CentralPricingTariffsTabProps> =
     setFormOwner('platform');
     setFormRestaurantId(defaultService === 'ready_food' && filterRestaurantId ? filterRestaurantId : '');
     setFormScope('area');
-    setFormGovId('');
+    setFormGovId(launchGovernorates[0]?.id || '');
     setFormCenterId('');
     setFormAreaId('');
     setFormAreaIds([]);
@@ -813,7 +811,7 @@ export const CentralPricingTariffsTab: React.FC<CentralPricingTariffsTabProps> =
             )}
 
             <div>
-              <label className="block text-[11px] font-bold text-slate-400 mb-1">المحافظة</label>
+              <label className="block text-[11px] font-bold text-slate-400 mb-1">المحافظة (الإطلاق: سوهاج)</label>
               <select
                 value={simGovId}
                 onChange={(e) => {
@@ -824,7 +822,7 @@ export const CentralPricingTariffsTab: React.FC<CentralPricingTariffsTabProps> =
                 className="w-full bg-slate-950 border border-slate-800 rounded-xl px-2.5 py-2 text-white"
               >
                 <option value="">اختر المحافظة...</option>
-                {activeGovernorates.map((g) => (
+                {launchGovernorates.map((g) => (
                   <option key={g.id} value={g.id}>
                     {g.name_ar}
                   </option>
@@ -1018,8 +1016,8 @@ export const CentralPricingTariffsTab: React.FC<CentralPricingTariffsTabProps> =
           }}
           className="bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white"
         >
-          <option value="">كل المحافظات</option>
-          {governorates.map((g) => (
+          <option value="">محافظة الإطلاق (سوهاج)</option>
+          {launchGovernorates.map((g) => (
             <option key={g.id} value={g.id}>
               {g.name_ar}
             </option>
@@ -1387,7 +1385,9 @@ export const CentralPricingTariffsTab: React.FC<CentralPricingTariffsTabProps> =
                 <div className="space-y-3 p-3.5 rounded-2xl bg-slate-950/60 border border-slate-800">
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                     <div>
-                      <label className="block font-bold text-slate-300 mb-1">المحافظة (geo_governorates) *</label>
+                      <label className="block font-bold text-slate-300 mb-1">
+                        المحافظة (geo_governorates) * <span className="text-[10px] text-emerald-400 font-normal">(نطاق الإطلاق: سوهاج فقط)</span>
+                      </label>
                       <select
                         required
                         value={formGovId}
@@ -1401,12 +1401,17 @@ export const CentralPricingTariffsTab: React.FC<CentralPricingTariffsTabProps> =
                         className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-white"
                       >
                         <option value="">اختر المحافظة...</option>
-                        {activeGovernorates.map((g) => (
+                        {launchGovernorates.map((g) => (
                           <option key={g.id} value={g.id}>
                             {g.name_ar}
                           </option>
                         ))}
                       </select>
+                      {editingTariff && !isLaunchScopeGovernorate(lookups.governoratesById.get(editingTariff.governorate_id)) && (
+                        <p className="text-[10px] text-rose-400 mt-1">
+                          هذا السجل مرتبط بمحافظة خارج نطاق الإطلاق الحالي (سوهاج) — يلزم اختيار سوهاج قبل الحفظ.
+                        </p>
+                      )}
                     </div>
 
                     {formScope !== 'governorate' && (

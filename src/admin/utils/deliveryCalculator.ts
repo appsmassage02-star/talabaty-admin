@@ -1,6 +1,10 @@
 /**
- * Standard Delivery Fee Calculator and Location Availability Engine
- * Enforces the strict priority rules for Talabat Al-Bayt invoices and delivery orders.
+ * @deprecated Legacy Delivery Fee Calculator (Archived Reference Only)
+ * Retained exclusively for backward compatibility with adminService.ts and the
+ * archived read-only AdminDeliverySettings view (delivery_governorate_settings).
+ *
+ * All active coverage & delivery pricing resolution MUST use:
+ *   centralGeoDeliveryService -> delivery_area_tariffs (geo_governorates / geo_centers / geo_areas).
  */
 
 import { DeliveryGovernorateSetting, DeliveryServiceSettings } from '../types';

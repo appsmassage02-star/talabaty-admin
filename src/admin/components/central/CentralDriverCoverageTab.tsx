@@ -16,6 +16,7 @@ import {
   GeoLookups,
   centralGeoDeliveryService,
   filterDriversForCoverage,
+  getLaunchScopeGovernorates,
   getScopeLevelLabelAr,
   getServiceLabelAr,
   isDriverEligibleForOperations,
@@ -106,15 +107,11 @@ export const CentralDriverCoverageTab: React.FC<CentralDriverCoverageTabProps> =
   const [modalError, setModalError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
-  const activeGovernorates = useMemo(() => {
-    const active = governorates.filter((g) => g.is_active);
-    return [...active].sort((a, b) => {
-      const aSohag = (a.code || '').toUpperCase() === 'SHG' || a.name_ar.includes('سوهاج') ? 0 : 1;
-      const bSohag = (b.code || '').toUpperCase() === 'SHG' || b.name_ar.includes('سوهاج') ? 0 : 1;
-      if (aSohag !== bSohag) return aSohag - bSohag;
-      return (a.sort_order ?? 9999) - (b.sort_order ?? 9999);
-    });
-  }, [governorates]);
+  // Launch-scope governorates (strictly enforces Sohag launch scope)
+  const launchGovernorates = useMemo(
+    () => getLaunchScopeGovernorates(governorates),
+    [governorates]
+  );
 
   const filterCenters = useMemo(
     () => (filterGovId ? centers.filter((c) => c.governorate_id === filterGovId && c.is_active) : []),
@@ -204,7 +201,7 @@ export const CentralDriverCoverageTab: React.FC<CentralDriverCoverageTabProps> =
   }, [drivers, currentCoverages, activePool, filterService, filterGovId, filterCenterId, filterAreaId]);
 
   const openAssignModal = () => {
-    const defaultGov = filterGovId || activeGovernorates[0]?.id || '';
+    const defaultGov = launchGovernorates[0]?.id || '';
     setEditingCoverage(null);
     setFormDriverId('');
     setFormServices(activePool === 'restaurant' ? ['ready_food'] : ['household_shortages']);
@@ -498,8 +495,8 @@ export const CentralDriverCoverageTab: React.FC<CentralDriverCoverageTabProps> =
             }}
             className="bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white"
           >
-            <option value="">كل المحافظات</option>
-            {activeGovernorates.map((g) => (
+            <option value="">محافظة الإطلاق (سوهاج)</option>
+            {launchGovernorates.map((g) => (
               <option key={g.id} value={g.id}>
                 {g.name_ar}
               </option>
@@ -887,7 +884,9 @@ export const CentralDriverCoverageTab: React.FC<CentralDriverCoverageTabProps> =
                     </div>
 
                     <div>
-                      <label className="block font-bold text-slate-300 mb-1">المحافظة *</label>
+                      <label className="block font-bold text-slate-300 mb-1">
+                        المحافظة * <span className="text-[10px] text-emerald-400 font-normal">(نطاق الإطلاق: سوهاج)</span>
+                      </label>
                       <select
                         required
                         value={formGovId}
@@ -899,7 +898,7 @@ export const CentralDriverCoverageTab: React.FC<CentralDriverCoverageTabProps> =
                         className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-white"
                       >
                         <option value="">اختر المحافظة...</option>
-                        {activeGovernorates.map((g) => (
+                        {launchGovernorates.map((g) => (
                           <option key={g.id} value={g.id}>
                             {g.name_ar}
                           </option>

@@ -21,6 +21,7 @@ import {
   GeoCenterAreaCount,
   GeoGovernorate,
   GeoGovernorateAreaCount,
+  LAUNCH_SCOPE_GOVERNORATE_CODES,
   ServiceSectionDiscrepancy,
   ServiceSectionSummary,
   TariffAreaConflictDetail,
@@ -74,8 +75,13 @@ const GEO_AREA_COLUMNS =
 const TARIFF_COLUMNS =
   'id, service_type, delivery_owner, restaurant_id, scope_level, governorate_id, center_id, area_id, base_delivery_fee, admin_commission, driver_net_fee, customer_delivery_fee, is_free_delivery, free_delivery_cost_bearer, estimated_delivery_minutes, is_enabled, notes, created_at, updated_at';
 
+const PLATFORM_COVERAGE_COLUMNS =
+  'id, driver_id, service_type, area_id, is_active, priority, created_at, updated_at';
+
+const RESTAURANT_COVERAGE_COLUMNS = 'id, driver_id, area_id, is_active, created_at';
+
 const DRIVER_COLUMNS =
-  'id, user_id, full_name, phone, email, is_active, status, governorate_code, governorate_name, markaz_name, vehicle_type, vehicle_plate, is_available_for_work, availability_last_seen_at, created_at, updated_at';
+  'id, user_id, full_name, phone, is_active, status, governorate_code, governorate_name, markaz_name, vehicle_type, vehicle_plate, is_available_for_work, availability_last_seen_at, created_at, updated_at';
 
 export function getServiceDefinition(serviceType: string): CentralServiceDefinition | undefined {
   return CENTRAL_SERVICE_DEFINITIONS.find((d) => d.type === serviceType);
@@ -209,6 +215,23 @@ export function buildGeoLookups(
   return { governoratesById, centersById, areasById };
 }
 
+export function isLaunchScopeGovernorate(
+  gov?: Pick<GeoGovernorate, 'code' | 'name_ar' | 'name_en'> | null
+): boolean {
+  if (!gov) return false;
+  const code = (gov.code || '').trim().toUpperCase();
+  if (code && LAUNCH_SCOPE_GOVERNORATE_CODES.includes(code)) {
+    return true;
+  }
+  const ar = gov.name_ar || '';
+  const en = (gov.name_en || '').trim().toLowerCase();
+  return ar.includes('سوهاج') || en.includes('sohag');
+}
+
+export function getLaunchScopeGovernorates(governorates: GeoGovernorate[]): GeoGovernorate[] {
+  return governorates.filter((g) => g.is_active && isLaunchScopeGovernorate(g));
+}
+
 export function validateGeoHierarchySelection(
   params: {
     scope_level: CentralScopeLevel;
@@ -216,6 +239,7 @@ export function validateGeoHierarchySelection(
     center_id?: string | null;
     area_id?: string | null;
     requireActiveGeo?: boolean;
+    enforceLaunchScope?: boolean;
   },
   lookups: GeoLookups
 ): { valid: boolean; error?: string; normalized?: { governorate_id: string; center_id: string | null; area_id: string | null } } {
@@ -239,6 +263,12 @@ export function validateGeoHierarchySelection(
     return {
       valid: false,
       error: `المحافظة (${gov.name_ar}) غير مفعلة (is_active = false) ولا يمكن تفعيل التوصيل عليها.`,
+    };
+  }
+  if (params.enforceLaunchScope && !isLaunchScopeGovernorate(gov)) {
+    return {
+      valid: false,
+      error: `نطاق الإطلاق الحالي مقتصر على محافظة سوهاج فقط (${LAUNCH_SCOPE_GOVERNORATE_CODES.join('، ')})؛ لا يُسمح بإعداد أو حفظ تغطية أو تسعيرة لمحافظة (${gov.name_ar}) حالياً.`,
     };
   }
 
@@ -411,6 +441,7 @@ export function validateTariffInput(
       center_id: input.center_id,
       area_id: input.area_id,
       requireActiveGeo: true,
+      enforceLaunchScope: true,
     },
     lookups
   );
@@ -934,6 +965,7 @@ export function validateDriverCoverageInput(
       center_id: input.center_id,
       area_id: input.area_id,
       requireActiveGeo: true,
+      enforceLaunchScope: true,
     },
     lookups
   );
@@ -1446,11 +1478,23 @@ export function createCentralGeoDeliveryService(
 
       if (error) {
         const formatted = formatCentralDbError(error, 'delivery_system_settings');
+        let diagnosticHint = formatted.constraintHint || '';
+        if (formatted.code === '42501') {
+          try {
+            const sessionRes = await client.auth?.getSession?.();
+            const hasSession = Boolean(sessionRes?.data?.session?.user);
+            diagnosticHint = hasSession
+              ? `${diagnosticHint} الجلسة الحالية مصادق عليها (authenticated)، ما يعني أن المنع ناتج عن سياسات RLS أو صلاحيات GRANT SELECT لجدول delivery_system_settings في Supabase.`
+              : `${diagnosticHint} لا توجد جلسة مشرف مصادق عليها (الجلسة الحالية anon)، كما قد يمنع RLS/GRANT القراءة حتى مع وجود سياسة ناقصة.`;
+          } catch {
+            // Keep base formatted hint if auth context cannot be inspected
+          }
+        }
         return {
           settings: null,
           error: formatted.message,
           errorCode: formatted.code,
-          constraintHint: formatted.constraintHint,
+          constraintHint: diagnosticHint || formatted.constraintHint,
         };
       }
 
@@ -1830,7 +1874,8 @@ export function createCentralGeoDeliveryService(
         return { success: false, error: baseValidation.error || 'بيانات التسعيرة غير مكتملة أو غير صالحة.' };
       }
 
-      // 2) Verify EVERY selected area belongs to center + governorate & active status when enabled
+      // 2) Verify EVERY selected area belongs to center + governorate, Sohag launch scope, and is_active = true
+      //    (strictly enforced regardless of whether is_enabled is true or false)
       for (const areaId of uniqueAreaIds) {
         const areaGeoCheck = validateGeoHierarchySelection(
           {
@@ -1838,7 +1883,8 @@ export function createCentralGeoDeliveryService(
             governorate_id: input.governorate_id,
             center_id: input.center_id,
             area_id: areaId,
-            requireActiveGeo: Boolean(input.is_enabled),
+            requireActiveGeo: true,
+            enforceLaunchScope: true,
           },
           lookups
         );
@@ -1982,6 +2028,7 @@ export function createCentralGeoDeliveryService(
             center_id: tariff.center_id,
             area_id: tariff.area_id,
             requireActiveGeo: true,
+            enforceLaunchScope: true,
           },
           lookups
         );
@@ -2102,14 +2149,14 @@ export function createCentralGeoDeliveryService(
         fetchAllRowsPaged<any>((from, to) =>
           client
             .from('delivery_driver_area_coverage')
-            .select('*')
+            .select(PLATFORM_COVERAGE_COLUMNS)
             .order('id', { ascending: true })
             .range(from, to)
         ),
         fetchAllRowsPaged<any>((from, to) =>
           client
             .from('restaurant_driver_area_coverage')
-            .select('*')
+            .select(RESTAURANT_COVERAGE_COLUMNS)
             .order('id', { ascending: true })
             .range(from, to)
         ),
@@ -2215,6 +2262,8 @@ export function createCentralGeoDeliveryService(
         : 'restaurant_driver_area_coverage';
 
       const nowIso = new Date().toISOString();
+      let targetId = input.id;
+      const selectCols = isPlatformPool ? PLATFORM_COVERAGE_COLUMNS : RESTAURANT_COVERAGE_COLUMNS;
       // Strictly write only columns verified to exist in Talabat Al-Bayt DEV
       const dbRow: Record<string, any> = isPlatformPool
         ? {
@@ -2225,6 +2274,8 @@ export function createCentralGeoDeliveryService(
             updated_at: nowIso,
             ...(validation.normalized.priority !== null
               ? { priority: validation.normalized.priority }
+              : targetId
+              ? { priority: null }
               : {}),
           }
         : {
@@ -2233,13 +2284,12 @@ export function createCentralGeoDeliveryService(
             is_active: validation.normalized.is_active,
           };
 
-      let targetId = input.id;
       if (targetId) {
         const { data: updatedRows, error } = await client
           .from(tableName)
           .update(dbRow)
           .eq('id', targetId)
-          .select('*');
+          .select(selectCols);
 
         if (error) {
           const formatted = formatCentralDbError(error, tableName);
@@ -2260,7 +2310,7 @@ export function createCentralGeoDeliveryService(
         const { data: insertedRows, error } = await client
           .from(tableName)
           .insert([{ ...dbRow, created_at: nowIso }])
-          .select('*');
+          .select(selectCols);
 
         if (error) {
           const formatted = formatCentralDbError(error, tableName);
@@ -2283,7 +2333,7 @@ export function createCentralGeoDeliveryService(
       // Mandatory Read-After-Write Verification
       const { data: verified, error: verifyErr } = await client
         .from(tableName)
-        .select('*')
+        .select(selectCols)
         .eq('id', targetId)
         .maybeSingle();
 
@@ -2342,6 +2392,7 @@ export function createCentralGeoDeliveryService(
             center_id: effectiveCenterId,
             area_id: coverage.area_id,
             requireActiveGeo: true,
+            enforceLaunchScope: true,
           },
           lookups
         );
@@ -2352,6 +2403,8 @@ export function createCentralGeoDeliveryService(
 
       const tableName =
         pool === 'platform' ? 'delivery_driver_area_coverage' : 'restaurant_driver_area_coverage';
+      const selectCols =
+        pool === 'platform' ? PLATFORM_COVERAGE_COLUMNS : RESTAURANT_COVERAGE_COLUMNS;
 
       const updatePayload: Record<string, any> =
         pool === 'platform'
@@ -2362,7 +2415,7 @@ export function createCentralGeoDeliveryService(
         .from(tableName)
         .update(updatePayload)
         .eq('id', coverage.id)
-        .select('*');
+        .select(selectCols);
 
       if (error) {
         const formatted = formatCentralDbError(error, tableName);
@@ -2382,7 +2435,7 @@ export function createCentralGeoDeliveryService(
 
       const { data: verified, error: verifyErr } = await client
         .from(tableName)
-        .select('*')
+        .select(selectCols)
         .eq('id', coverage.id)
         .maybeSingle();
 

@@ -46,7 +46,9 @@ import {
 import {
   buildGeoLookups,
   centralGeoDeliveryService,
+  getLaunchScopeGovernorates,
   getScopeLevelLabelAr,
+  isLaunchScopeGovernorate,
   previewGeneratedTariffValues,
 } from '../services/centralGeoDeliveryService';
 import {
@@ -209,6 +211,10 @@ export const AdminRestaurantManagement: React.FC = () => {
 
   // Official Egyptian Administrative Geo Hierarchy State (geo_*)
   const [governorates, setGovernorates] = useState<GeoGovernorate[]>([]);
+  const launchGovernorates = useMemo(
+    () => getLaunchScopeGovernorates(governorates),
+    [governorates]
+  );
   const [restaurantCenters, setRestaurantCenters] = useState<GeoCenter[]>([]);
   const [restaurantAreas, setRestaurantAreas] = useState<GeoArea[]>([]);
   const [isLoadingAddressHierarchy, setIsLoadingAddressHierarchy] = useState(false);
@@ -483,6 +489,7 @@ export const AdminRestaurantManagement: React.FC = () => {
       showToast('ليس لديك صلاحية لإضافة مطعم جديد', 'error');
       return;
     }
+    const defaultGovId = launchGovernorates[0]?.id || null;
     setRestaurantCenters([]);
     setRestaurantAreas([]);
     setEditingRestaurant({
@@ -490,7 +497,7 @@ export const AdminRestaurantManagement: React.FC = () => {
       phone: '',
       address: '',
       country_name: 'مصر',
-      governorate_id: null,
+      governorate_id: defaultGovId,
       center_id: null,
       area_id: null,
       street: '',
@@ -505,7 +512,14 @@ export const AdminRestaurantManagement: React.FC = () => {
       category_ids: [],
     });
     setIsRestaurantModalOpen(true);
-  }, [hasPermission, showToast]);
+    if (defaultGovId) {
+      setIsLoadingAddressHierarchy(true);
+      restaurantAdminService.getGeoCenters(defaultGovId).then((res) => {
+        setRestaurantCenters(res.centers || []);
+        setIsLoadingAddressHierarchy(false);
+      });
+    }
+  }, [hasPermission, launchGovernorates, showToast]);
 
   const handleOpenEditRestaurant = useCallback(async (rest: Restaurant) => {
     if (!hasPermission('restaurants.manage')) {
@@ -559,6 +573,13 @@ export const AdminRestaurantManagement: React.FC = () => {
   }, [hasPermission, showToast]);
 
   const handleRestaurantGovChange = async (govId: string) => {
+    if (govId) {
+      const targetGov = governorates.find((g) => g.id === govId);
+      if (targetGov && !isLaunchScopeGovernorate(targetGov)) {
+        showToast('نطاق الإطلاق التشغيلي الحالي مقتصر على محافظة سوهاج فقط', 'error');
+        return;
+      }
+    }
     setEditingRestaurant((prev) =>
       prev
         ? {
@@ -685,7 +706,10 @@ export const AdminRestaurantManagement: React.FC = () => {
   );
 
   const handleOpenServiceAreasModal = async (rest: Restaurant) => {
-    const defaultGovId = rest.governorate_id || governorates[0]?.id || '';
+    const restGovObj = rest.governorate_id ? governorates.find((g) => g.id === rest.governorate_id) : undefined;
+    const isRestInLaunchScope = Boolean(restGovObj && isLaunchScopeGovernorate(restGovObj));
+    const defaultGovId = (isRestInLaunchScope && rest.governorate_id) || launchGovernorates[0]?.id || '';
+    const defaultCenterId = isRestInLaunchScope ? rest.center_id || '' : '';
     setSelectedRestaurantForAreas(rest);
     setEditingTariffIdForRestModal(null);
     setPendingDeleteRestTariff(null);
@@ -694,7 +718,7 @@ export const AdminRestaurantManagement: React.FC = () => {
     setNewServiceAreaForm({
       scope_level: 'area',
       governorate_id: defaultGovId,
-      center_id: rest.center_id || '',
+      center_id: defaultCenterId,
       area_id: '',
       base_delivery_fee: rest.delivery_fee !== undefined && rest.delivery_fee !== null ? String(rest.delivery_fee) : '',
       is_free_delivery: false,
@@ -710,8 +734,8 @@ export const AdminRestaurantManagement: React.FC = () => {
         const cRes = await restaurantAdminService.getGeoCenters(defaultGovId);
         loadedCenters = cRes.centers || [];
         setServiceAreaCenters(loadedCenters);
-        if (rest.center_id) {
-          const aRes = await restaurantAdminService.getGeoAreas(rest.center_id, defaultGovId);
+        if (defaultCenterId) {
+          const aRes = await restaurantAdminService.getGeoAreas(defaultCenterId, defaultGovId);
           loadedAreas = aRes.areas || [];
           setServiceAreaAreas(loadedAreas);
         } else {
@@ -738,6 +762,13 @@ export const AdminRestaurantManagement: React.FC = () => {
   };
 
   const handleServiceAreaGovChange = async (govId: string) => {
+    if (govId) {
+      const targetGov = governorates.find((g) => g.id === govId);
+      if (targetGov && !isLaunchScopeGovernorate(targetGov)) {
+        showToast('نطاق الإطلاق التشغيلي الحالي مقتصر على محافظة سوهاج فقط', 'error');
+        return;
+      }
+    }
     setNewServiceAreaForm((prev) => ({
       ...prev,
       governorate_id: govId,
@@ -4065,8 +4096,8 @@ export const AdminRestaurantManagement: React.FC = () => {
                       onChange={(e) => handleRestaurantGovChange(e.target.value)}
                       className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-white outline-none focus:border-amber-500 text-xs"
                     >
-                      <option value="">اختر المحافظة</option>
-                      {governorates.map((g) => (
+                      <option value="">اختر المحافظة (سوهاج)</option>
+                      {launchGovernorates.map((g) => (
                         <option key={g.id} value={g.id}>
                           {g.name_ar}
                         </option>
@@ -4628,7 +4659,7 @@ export const AdminRestaurantManagement: React.FC = () => {
                       setEditingTariffIdForRestModal(null);
                       setNewServiceAreaForm({
                         scope_level: 'area',
-                        governorate_id: selectedRestaurantForAreas.governorate_id || governorates[0]?.id || '',
+                        governorate_id: launchGovernorates[0]?.id || '',
                         center_id: selectedRestaurantForAreas.center_id || '',
                         area_id: '',
                         base_delivery_fee: '',
@@ -4668,14 +4699,14 @@ export const AdminRestaurantManagement: React.FC = () => {
                 </div>
 
                 <div>
-                  <label className="block text-slate-400 font-bold mb-1">المحافظة *</label>
+                  <label className="block text-slate-400 font-bold mb-1">المحافظة * (نطاق سوهاج)</label>
                   <select
                     value={newServiceAreaForm.governorate_id}
                     onChange={(e) => handleServiceAreaGovChange(e.target.value)}
                     className="w-full bg-slate-900 border border-slate-800 rounded-xl px-2.5 py-1.5 text-white outline-none text-xs"
                   >
                     <option value="">اختر المحافظة</option>
-                    {governorates.map((g) => (
+                    {launchGovernorates.map((g) => (
                       <option key={g.id} value={g.id}>
                         {g.name_ar}
                       </option>

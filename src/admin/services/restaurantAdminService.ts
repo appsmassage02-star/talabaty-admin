@@ -35,6 +35,7 @@ import {
   ReassignableDriver,
 } from '../types/restaurantAdminTypes';
 import { GeoGovernorate, GeoCenter, GeoArea } from '../types/centralGeoTypes';
+import { isLaunchScopeGovernorate } from './centralGeoDeliveryService';
 
 export const restaurantAdminService = {
   async fetchAllRowsPaged<T = any>(
@@ -329,6 +330,26 @@ export const restaurantAdminService = {
     }
 
     try {
+      if (data.governorate_id) {
+        const { data: govRow, error: govErr } = await supabase
+          .from('geo_governorates')
+          .select('id, code, name_ar, name_en, is_active')
+          .eq('id', data.governorate_id)
+          .maybeSingle();
+        if (govErr) {
+          return { success: false, error: `تعذر التحقق من المحافظة المختارة: ${govErr.message}` };
+        }
+        if (!govRow || !govRow.is_active) {
+          return { success: false, error: 'المحافظة المختارة للمطعم غير موجودة أو غير مفعلة.' };
+        }
+        if (!isLaunchScopeGovernorate(govRow as GeoGovernorate)) {
+          return {
+            success: false,
+            error: `نطاق الإطلاق التشغيلي الحالي مقتصر على محافظة سوهاج فقط — لا يمكن حفظ عنوان المطعم في محافظة "${govRow.name_ar}".`,
+          };
+        }
+      }
+
       const nowIso = new Date().toISOString();
       const insertPayload = {
         name: data.name.trim(),
@@ -421,7 +442,28 @@ export const restaurantAdminService = {
       if (updates.address !== undefined) patch.address = updates.address.trim();
 
       if (updates.country_name !== undefined) patch.country_name = updates.country_name || 'مصر';
-      if (updates.governorate_id !== undefined) patch.governorate_id = updates.governorate_id || null;
+      if (updates.governorate_id !== undefined) {
+        if (updates.governorate_id) {
+          const { data: govRow, error: govErr } = await supabase
+            .from('geo_governorates')
+            .select('id, code, name_ar, name_en, is_active')
+            .eq('id', updates.governorate_id)
+            .maybeSingle();
+          if (govErr) {
+            return { success: false, error: `تعذر التحقق من المحافظة المختارة: ${govErr.message}` };
+          }
+          if (!govRow || !govRow.is_active) {
+            return { success: false, error: 'المحافظة المختارة للمطعم غير موجودة أو غير مفعلة.' };
+          }
+          if (!isLaunchScopeGovernorate(govRow as GeoGovernorate)) {
+            return {
+              success: false,
+              error: `نطاق الإطلاق التشغيلي الحالي مقتصر على محافظة سوهاج فقط — لا يمكن تحديث عنوان المطعم إلى محافظة "${govRow.name_ar}".`,
+            };
+          }
+        }
+        patch.governorate_id = updates.governorate_id || null;
+      }
       if (updates.center_id !== undefined) patch.center_id = updates.center_id || null;
       if (updates.area_id !== undefined) patch.area_id = updates.area_id || null;
       if (updates.street !== undefined) patch.street = updates.street?.trim() || null;
@@ -2138,13 +2180,10 @@ export const restaurantAdminService = {
       if (!res.success) {
         return { governorates: [], error: `فشل جلب قائمة المحافظات (geo_governorates): ${res.error}` };
       }
-      const sorted = ([...res.data] as GeoGovernorate[]).sort((a, b) => {
-        const aSohag = (a.code || '').toUpperCase() === 'SHG' || a.name_ar.includes('سوهاج') ? 0 : 1;
-        const bSohag = (b.code || '').toUpperCase() === 'SHG' || b.name_ar.includes('سوهاج') ? 0 : 1;
-        if (aSohag !== bSohag) return aSohag - bSohag;
-        return (a.sort_order ?? 9999) - (b.sort_order ?? 9999);
-      });
-      return { governorates: sorted };
+      const filtered = ([...res.data] as GeoGovernorate[])
+        .filter((g) => isLaunchScopeGovernorate(g))
+        .sort((a, b) => (a.sort_order ?? 9999) - (b.sort_order ?? 9999));
+      return { governorates: filtered };
     } catch (err: any) {
       return { governorates: [], error: err?.message || 'تعذر جلب المحافظات' };
     }
