@@ -1,8 +1,12 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useAdmin } from '../context/AdminContext';
 import {
+  AppSectionKey,
+  AppSectionSetting,
+  AppSectionSettingUpdateInput,
   CentralDriverAreaCoverage,
   CentralDriverCoveragePool,
+  CentralMutationResult,
   CentralRestaurantSummary,
   CentralServiceType,
   DeliveryAreaTariff,
@@ -23,6 +27,7 @@ import {
   centralGeoDeliveryService,
 } from '../services/centralGeoDeliveryService';
 import { CentralServicesTab } from './central/CentralServicesTab';
+import { CentralSectionSettingsTab } from './central/CentralSectionSettingsTab';
 import { CentralGeoExplorerTab } from './central/CentralGeoExplorerTab';
 import { CentralPricingTariffsTab } from './central/CentralPricingTariffsTab';
 import { CentralDriverCoverageTab } from './central/CentralDriverCoverageTab';
@@ -34,17 +39,24 @@ import {
   Lock,
   Navigation,
   RefreshCw,
+  Sliders,
   Trash2,
 } from 'lucide-react';
 
-type CentralTabId = 'central_services' | 'central_geo' | 'central_pricing' | 'central_drivers';
+type CentralTabId =
+  | 'central_services'
+  | 'central_section_settings'
+  | 'central_geo'
+  | 'central_pricing'
+  | 'central_drivers';
 
 export const AdminCentralGeoOperations: React.FC = () => {
-  const { activeSection, navigateToSection, hasPermission, showToast } = useAdmin();
+  const { activeSection, navigateToSection, hasPermission, showToast, adminUser } = useAdmin();
 
   const currentTab: CentralTabId = useMemo(() => {
     if (
       activeSection === 'central_services' ||
+      activeSection === 'central_section_settings' ||
       activeSection === 'central_geo' ||
       activeSection === 'central_pricing' ||
       activeSection === 'central_drivers'
@@ -56,6 +68,8 @@ export const AdminCentralGeoOperations: React.FC = () => {
 
   const canViewAreas = hasPermission('central_areas.view');
   const canManageAreas = hasPermission('central_areas.manage');
+  const canManageSectionSettings =
+    hasPermission('central_areas.manage') || hasPermission('settings.manage');
   const canViewPricing = hasPermission('central_pricing.view');
   const canManagePricing = hasPermission('central_pricing.manage');
   const canViewCoverage = hasPermission('central_driver_coverage.view');
@@ -76,6 +90,7 @@ export const AdminCentralGeoOperations: React.FC = () => {
   const [platformCoverages, setPlatformCoverages] = useState<CentralDriverAreaCoverage[]>([]);
   const [restaurantCoverages, setRestaurantCoverages] = useState<CentralDriverAreaCoverage[]>([]);
   const [deliverySystemSettings, setDeliverySystemSettings] = useState<DeliverySystemSettings | null>(null);
+  const [appSectionSettings, setAppSectionSettings] = useState<AppSectionSetting[]>([]);
 
   // Errors per data source (truthful DB error propagation)
   const [geoError, setGeoError] = useState<string | null>(null);
@@ -85,6 +100,8 @@ export const AdminCentralGeoOperations: React.FC = () => {
   const [platformCoverageError, setPlatformCoverageError] = useState<string | null>(null);
   const [restaurantCoverageError, setRestaurantCoverageError] = useState<string | null>(null);
   const [deliverySystemSettingsError, setDeliverySystemSettingsError] = useState<string | null>(null);
+  const [appSectionSettingsError, setAppSectionSettingsError] = useState<string | null>(null);
+  const [appSectionSettingsHint, setAppSectionSettingsHint] = useState<string | null>(null);
 
   const [pricingInitialService, setPricingInitialService] = useState<CentralServiceType | ''>('');
 
@@ -104,6 +121,8 @@ export const AdminCentralGeoOperations: React.FC = () => {
     setPlatformCoverageError(null);
     setRestaurantCoverageError(null);
     setDeliverySystemSettingsError(null);
+    setAppSectionSettingsError(null);
+    setAppSectionSettingsHint(null);
 
     try {
       const [govRes, centerRes, lightAreasRes, restRes] = await Promise.all([
@@ -127,10 +146,11 @@ export const AdminCentralGeoOperations: React.FC = () => {
       const restMap = new Map<string, CentralRestaurantSummary>();
       restRes.restaurants.forEach((r) => restMap.set(r.id, r));
 
-      const [tariffsRes, fleetRes, sysSettingsRes] = await Promise.all([
+      const [tariffsRes, fleetRes, sysSettingsRes, secSettingsRes] = await Promise.all([
         centralGeoDeliveryService.getDeliveryAreaTariffs(baseLookups, restMap),
         centralGeoDeliveryService.getDriversAndCoverage(baseLookups, restMap),
         centralGeoDeliveryService.getDeliverySystemSettings(),
+        centralGeoDeliveryService.getAppSectionSettings(),
       ]);
 
       if (tariffsRes.error) {
@@ -150,6 +170,12 @@ export const AdminCentralGeoOperations: React.FC = () => {
         setDeliverySystemSettingsError(sysSettingsRes.error);
       }
       setDeliverySystemSettings(sysSettingsRes.settings);
+
+      if (secSettingsRes.error) {
+        setAppSectionSettingsError(secSettingsRes.error);
+        setAppSectionSettingsHint(secSettingsRes.constraintHint || null);
+      }
+      setAppSectionSettings(secSettingsRes.settings);
     } catch (e: any) {
       setGeoError(e?.message || 'حدث خطأ غير متوقع أثناء تحميل البيانات المركزية');
     } finally {
@@ -183,6 +209,37 @@ export const AdminCentralGeoOperations: React.FC = () => {
   );
 
   // Handlers
+  const handleSaveSectionSetting = async (
+    sectionKey: AppSectionKey,
+    updates: AppSectionSettingUpdateInput
+  ): Promise<CentralMutationResult<AppSectionSetting>> => {
+    if (!canManageSectionSettings) {
+      const msg = 'ليس لديك صلاحية تعديل إعدادات الأقسام.';
+      showToast(msg, 'error');
+      return { success: false, verifiedFromDb: false, error: msg };
+    }
+    setIsMutating(true);
+    try {
+      const res = await centralGeoDeliveryService.updateAppSectionSetting(
+        sectionKey,
+        updates,
+        adminUser?.user_id || null
+      );
+      if (!res.success || !res.verifiedFromDb || !res.data) {
+        showToast(res.error || 'فشل حفظ إعدادات القسم في app_section_settings', 'error');
+        return res;
+      }
+
+      setAppSectionSettings((prev) =>
+        prev.map((item) => (item.section_key === sectionKey ? res.data! : item))
+      );
+      showToast('تم حفظ إعدادات القسم وتأكيدها من قاعدة البيانات بنجاح', 'success');
+      return res;
+    } finally {
+      setIsMutating(false);
+    }
+  };
+
   const handleSaveTariff = async (
     input: DeliveryAreaTariffInput
   ): Promise<{ success: boolean; data?: DeliveryAreaTariff; error?: string }> => {
@@ -461,6 +518,7 @@ export const AdminCentralGeoOperations: React.FC = () => {
   const hasCurrentTabAccess = useMemo(() => {
     switch (currentTab) {
       case 'central_services':
+      case 'central_section_settings':
       case 'central_geo':
         return canViewAreas;
       case 'central_pricing':
@@ -479,6 +537,7 @@ export const AdminCentralGeoOperations: React.FC = () => {
     visible: boolean;
   }> = [
     { id: 'central_services', label: 'أقسام الخدمات', icon: Layers, visible: canViewAreas },
+    { id: 'central_section_settings', label: 'إعدادات الأقسام', icon: Sliders, visible: canViewAreas },
     { id: 'central_geo', label: 'المناطق الجغرافية', icon: Globe, visible: canViewAreas },
     { id: 'central_pricing', label: 'التسعير والرسوم', icon: Coins, visible: canViewPricing },
     { id: 'central_drivers', label: 'عمالة التوصيل', icon: Navigation, visible: canViewCoverage },
@@ -560,6 +619,21 @@ export const AdminCentralGeoOperations: React.FC = () => {
           canViewPricing={canViewPricing}
           isBusy={isLoading || isMutating}
           onToggleTariffEnabled={handleToggleTariffEnabled}
+          onGoToPricingForService={(svc) => {
+            setPricingInitialService(svc);
+            navigateToSection('central_pricing');
+          }}
+          onRefresh={loadAllCentralData}
+        />
+      ) : currentTab === 'central_section_settings' ? (
+        <CentralSectionSettingsTab
+          settings={appSectionSettings}
+          settingsError={appSectionSettingsError}
+          settingsConstraintHint={appSectionSettingsHint}
+          canManageSectionSettings={canManageSectionSettings}
+          canViewPricing={canViewPricing}
+          isBusy={isLoading || isMutating}
+          onSaveSectionSetting={handleSaveSectionSetting}
           onGoToPricingForService={(svc) => {
             setPricingInitialService(svc);
             navigateToSection('central_pricing');

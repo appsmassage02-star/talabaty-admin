@@ -707,8 +707,9 @@ export const adminService = {
         this.fetchAllRowsPaged(
           (from, to) =>
             supabase
-              .from('pharmacy_delivery_area_settings')
-              .select('id, service_enabled')
+              .from('delivery_area_tariffs')
+              .select('id, is_enabled')
+              .eq('service_type', 'pharmacy')
               .order('id', { ascending: true })
               .range(from, to),
           500
@@ -836,7 +837,7 @@ export const adminService = {
       });
 
       const pharmacyTotalPharmacies = pPharmacies.length;
-      const pharmacyActiveAreas = pAreas.filter((a: any) => Boolean(a.service_enabled)).length;
+      const pharmacyActiveAreas = pAreas.filter((a: any) => Boolean(a.is_enabled)).length;
 
       // ----------------------------------------------------------------------
       // Restaurant Domain Aggregation with Strict Mutual Exclusivity
@@ -8151,8 +8152,9 @@ export const adminService = {
         this.fetchAllRowsPaged(
           (from, to) =>
             supabase
-              .from('pharmacy_delivery_area_settings')
-              .select('id, service_enabled')
+              .from('delivery_area_tariffs')
+              .select('id, is_enabled')
+              .eq('service_type', 'pharmacy')
               .order('id', { ascending: true })
               .range(from, to),
           500
@@ -8246,7 +8248,7 @@ export const adminService = {
           total_user_pharmacies: userPharmaciesRes.count ?? 0,
           total_saved_prescriptions: savedPrescriptionsRes.count ?? 0,
           total_delivery_areas: areas.length,
-          enabled_delivery_areas: (areas as any[]).filter((a) => Boolean(a.service_enabled)).length,
+          enabled_delivery_areas: (areas as any[]).filter((a) => Boolean(a.is_enabled)).length,
           by_status: byStatus,
           by_governorate: byGovernorate,
         },

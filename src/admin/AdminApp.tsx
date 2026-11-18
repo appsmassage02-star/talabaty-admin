@@ -219,6 +219,7 @@ const AdminContent: React.FC = () => {
       case 'overview':
         return <AdminOverview />;
       case 'central_services':
+      case 'central_section_settings':
       case 'central_geo':
       case 'central_pricing':
       case 'central_drivers':

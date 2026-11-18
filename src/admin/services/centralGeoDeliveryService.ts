@@ -1,5 +1,10 @@
 import { supabase, isSupabaseConfigured } from '../../lib/supabase';
 import {
+  AppDisabledDisplayMode,
+  AppSectionDisplayWidth,
+  AppSectionKey,
+  AppSectionSetting,
+  AppSectionSettingUpdateInput,
   CentralDeliveryOwner,
   CentralDriverAreaCoverage,
   CentralDriverCoveragePool,
@@ -82,6 +87,102 @@ const RESTAURANT_COVERAGE_COLUMNS = 'id, driver_id, area_id, is_active, created_
 
 const DRIVER_COLUMNS =
   'id, user_id, full_name, phone, is_active, status, governorate_code, governorate_name, markaz_name, vehicle_type, vehicle_plate, is_available_for_work, availability_last_seen_at, created_at, updated_at';
+
+export const APP_SECTION_SETTINGS_COLUMNS =
+  'section_key, section_enabled, section_visible, delivery_enabled, disabled_display_mode, display_width, updated_at, updated_by';
+
+export const ALLOWED_APP_DISABLED_DISPLAY_MODES: readonly AppDisabledDisplayMode[] = [
+  'show_disabled',
+  'hide',
+];
+
+export const ALLOWED_APP_SECTION_DISPLAY_WIDTHS: readonly AppSectionDisplayWidth[] = [
+  'full',
+  'half',
+];
+
+export function normalizeAppSectionSettingRow(row: any): AppSectionSetting {
+  const modeRaw = row?.disabled_display_mode;
+  const widthRaw = row?.display_width;
+  return {
+    section_key: row.section_key as AppSectionKey,
+    section_enabled: Boolean(row?.section_enabled),
+    section_visible: Boolean(row?.section_visible),
+    delivery_enabled: Boolean(row?.delivery_enabled),
+    disabled_display_mode:
+      modeRaw === 'show_disabled' || modeRaw === 'hide' ? modeRaw : null,
+    display_width: widthRaw === 'full' || widthRaw === 'half' ? widthRaw : null,
+    updated_at: row?.updated_at || null,
+    updated_by: row?.updated_by || null,
+  };
+}
+
+export function validateAppSectionSettingUpdate(
+  sectionKey: AppSectionKey,
+  updates: AppSectionSettingUpdateInput
+): { valid: boolean; error?: string; payload?: Record<string, any> } {
+  if (!ALLOWED_CENTRAL_SERVICE_TYPES.includes(sectionKey)) {
+    return {
+      valid: false,
+      error: `مفتاح القسم (${sectionKey}) غير معتمد. المفاتيح المعتمدة فقط: household_shortages، pharmacy، ready_food.`,
+    };
+  }
+
+  const payload: Record<string, any> = {};
+
+  if (updates.section_enabled !== undefined) {
+    if (typeof updates.section_enabled !== 'boolean') {
+      return { valid: false, error: 'قيمة تشغيل القسم (section_enabled) يجب أن تكون منطقية true أو false.' };
+    }
+    payload.section_enabled = updates.section_enabled;
+  }
+
+  if (updates.section_visible !== undefined) {
+    if (typeof updates.section_visible !== 'boolean') {
+      return { valid: false, error: 'قيمة إظهار القسم (section_visible) يجب أن تكون منطقية true أو false.' };
+    }
+    payload.section_visible = updates.section_visible;
+  }
+
+  if (updates.delivery_enabled !== undefined) {
+    if (typeof updates.delivery_enabled !== 'boolean') {
+      return { valid: false, error: 'قيمة خدمة التوصيل (delivery_enabled) يجب أن تكون منطقية true أو false.' };
+    }
+    payload.delivery_enabled = updates.delivery_enabled;
+  }
+
+  if (updates.disabled_display_mode !== undefined) {
+    if (
+      updates.disabled_display_mode !== null &&
+      !ALLOWED_APP_DISABLED_DISPLAY_MODES.includes(updates.disabled_display_mode)
+    ) {
+      return {
+        valid: false,
+        error: 'قيمة طريقة العرض عند التعطيل (disabled_display_mode) غير صالحة؛ القيم المسموحة هي show_disabled أو hide أو فارغ.',
+      };
+    }
+    payload.disabled_display_mode = updates.disabled_display_mode;
+  }
+
+  if (updates.display_width !== undefined) {
+    if (
+      updates.display_width !== null &&
+      !ALLOWED_APP_SECTION_DISPLAY_WIDTHS.includes(updates.display_width)
+    ) {
+      return {
+        valid: false,
+        error: 'قيمة عرض البطاقة (display_width) غير صالحة؛ القيم المسموحة هي full أو half أو فارغ.',
+      };
+    }
+    payload.display_width = updates.display_width;
+  }
+
+  if (Object.keys(payload).length === 0) {
+    return { valid: false, error: 'لا توجد تعديلات محددة للحفظ في إعدادات القسم.' };
+  }
+
+  return { valid: true, payload };
+}
 
 export function getServiceDefinition(serviceType: string): CentralServiceDefinition | undefined {
   return CENTRAL_SERVICE_DEFINITIONS.find((d) => d.type === serviceType);
@@ -1527,6 +1628,198 @@ export function createCentralGeoDeliveryService(
           updated_by: data.updated_by || null,
           updated_at: data.updated_at || null,
         },
+      };
+    },
+
+    async getAppSectionSettings(): Promise<{
+      settings: AppSectionSetting[];
+      error?: string;
+      errorCode?: string | null;
+      constraintHint?: string | null;
+    }> {
+      if (!client) return { settings: [], error: 'Supabase غير متصل' };
+      const { data, error } = await client
+        .from('app_section_settings')
+        .select(APP_SECTION_SETTINGS_COLUMNS)
+        .order('section_key', { ascending: true });
+
+      if (error) {
+        const formatted = formatCentralDbError(error, 'app_section_settings');
+        return {
+          settings: [],
+          error: formatted.message,
+          errorCode: formatted.code,
+          constraintHint: formatted.constraintHint,
+        };
+      }
+
+      const validRows = (data || [])
+        .filter((row: any) => ALLOWED_CENTRAL_SERVICE_TYPES.includes(row?.section_key))
+        .map(normalizeAppSectionSettingRow);
+
+      return { settings: validRows };
+    },
+
+    async getAppSectionSettingByKey(sectionKey: AppSectionKey): Promise<{
+      setting: AppSectionSetting | null;
+      error?: string;
+      errorCode?: string | null;
+      constraintHint?: string | null;
+    }> {
+      if (!client) return { setting: null, error: 'Supabase غير متصل' };
+      if (!ALLOWED_CENTRAL_SERVICE_TYPES.includes(sectionKey)) {
+        return { setting: null, error: `مفتاح القسم (${sectionKey}) غير معتمد.` };
+      }
+
+      const { data, error } = await client
+        .from('app_section_settings')
+        .select(APP_SECTION_SETTINGS_COLUMNS)
+        .eq('section_key', sectionKey)
+        .maybeSingle();
+
+      if (error) {
+        const formatted = formatCentralDbError(error, 'app_section_settings');
+        return {
+          setting: null,
+          error: formatted.message,
+          errorCode: formatted.code,
+          constraintHint: formatted.constraintHint,
+        };
+      }
+
+      if (!data) {
+        return {
+          setting: null,
+          error: `لم يتم العثور على سجل إعدادات للقسم (${sectionKey}) في جدول app_section_settings.`,
+        };
+      }
+
+      return { setting: normalizeAppSectionSettingRow(data) };
+    },
+
+    async updateAppSectionSetting(
+      sectionKey: AppSectionKey,
+      updates: AppSectionSettingUpdateInput,
+      callerUserId?: string | null
+    ): Promise<CentralMutationResult<AppSectionSetting>> {
+      if (!client) return { success: false, error: 'Supabase غير متصل' };
+
+      const validation = validateAppSectionSettingUpdate(sectionKey, updates);
+      if (!validation.valid || !validation.payload) {
+        return { success: false, error: validation.error || 'بيانات تحديث القسم غير صالحة.' };
+      }
+
+      let resolvedUserId = callerUserId || null;
+      if (!resolvedUserId && client.auth?.getUser) {
+        try {
+          const authRes = await client.auth.getUser();
+          resolvedUserId = authRes?.data?.user?.id || null;
+        } catch {
+          // Leave null if client does not expose auth.getUser
+        }
+      }
+
+      const nowIso = new Date().toISOString();
+      const dbPayload: Record<string, any> = {
+        ...validation.payload,
+        updated_at: nowIso,
+        ...(resolvedUserId ? { updated_by: resolvedUserId } : {}),
+      };
+
+      const { data: updatedRows, error } = await client
+        .from('app_section_settings')
+        .update(dbPayload)
+        .eq('section_key', sectionKey)
+        .select(APP_SECTION_SETTINGS_COLUMNS);
+
+      if (error) {
+        const formatted = formatCentralDbError(error, 'app_section_settings');
+        return {
+          success: false,
+          verifiedFromDb: false,
+          error: formatted.message,
+          errorCode: formatted.code,
+          constraintHint: formatted.constraintHint,
+        };
+      }
+
+      if (!updatedRows || updatedRows.length === 0) {
+        return {
+          success: false,
+          verifiedFromDb: false,
+          error: `لم يتم تحديث أي سجل في جدول app_section_settings للقسم (${sectionKey}). تحقق من وجود السجل وصلاحيات UPDATE للمشرف في سياسات RLS.`,
+        };
+      }
+
+      // Mandatory Read-After-Write Verification
+      const { data: verifiedRow, error: verifyErr } = await client
+        .from('app_section_settings')
+        .select(APP_SECTION_SETTINGS_COLUMNS)
+        .eq('section_key', sectionKey)
+        .maybeSingle();
+
+      if (verifyErr || !verifiedRow) {
+        const formattedVerify = verifyErr
+          ? formatCentralDbError(verifyErr, 'app_section_settings')
+          : null;
+        return {
+          success: false,
+          verifiedFromDb: false,
+          error: `تم إرسال التحديث لكن تعذر تأكيد القيم عند إعادة القراءة من app_section_settings${formattedVerify ? `: ${formattedVerify.message}` : ''}.`,
+          errorCode: formattedVerify?.code || null,
+          constraintHint: formattedVerify?.constraintHint || null,
+        };
+      }
+
+      const normalized = normalizeAppSectionSettingRow(verifiedRow);
+
+      // Assert every requested column persisted truthfully
+      const mismatches: string[] = [];
+      if (
+        validation.payload.section_enabled !== undefined &&
+        normalized.section_enabled !== validation.payload.section_enabled
+      ) {
+        mismatches.push('section_enabled');
+      }
+      if (
+        validation.payload.section_visible !== undefined &&
+        normalized.section_visible !== validation.payload.section_visible
+      ) {
+        mismatches.push('section_visible');
+      }
+      if (
+        validation.payload.delivery_enabled !== undefined &&
+        normalized.delivery_enabled !== validation.payload.delivery_enabled
+      ) {
+        mismatches.push('delivery_enabled');
+      }
+      if (
+        validation.payload.disabled_display_mode !== undefined &&
+        normalized.disabled_display_mode !== validation.payload.disabled_display_mode
+      ) {
+        mismatches.push('disabled_display_mode');
+      }
+      if (
+        validation.payload.display_width !== undefined &&
+        normalized.display_width !== validation.payload.display_width
+      ) {
+        mismatches.push('display_width');
+      }
+
+      if (mismatches.length > 0) {
+        return {
+          success: false,
+          verifiedFromDb: false,
+          error: `القيم المعاد قراءتها من app_section_settings لم تطابق التعديلات المطلوبة في الحقول: ${mismatches.join('، ')}.`,
+        };
+      }
+
+      await auditLogger('central_section_settings.update', 'app_section_settings', sectionKey, dbPayload);
+
+      return {
+        success: true,
+        verifiedFromDb: true,
+        data: normalized,
       };
     },
 

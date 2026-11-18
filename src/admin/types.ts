@@ -471,6 +471,7 @@ export type AdminNavSection =
   | 'settings'
   | 'settings_rls'
   | 'central_services'
+  | 'central_section_settings'
   | 'central_geo'
   | 'central_pricing'
   | 'central_drivers';

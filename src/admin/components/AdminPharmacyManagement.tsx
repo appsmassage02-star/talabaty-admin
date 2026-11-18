@@ -1,7 +1,9 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { useAdmin } from '../context/AdminContext';
 import { adminService } from '../services/adminService';
+import { centralGeoDeliveryService } from '../services/centralGeoDeliveryService';
 import {
+  AppSectionSetting,
   PharmacyStatsSummary,
   PharmacyOrder,
   PharmacyOrderItem,
@@ -10,9 +12,6 @@ import {
   PharmacyOrderStatusHistory,
   PharmacyOrderChangeLog,
   PharmacySavedPrescription,
-  PharmacySettingsRecord,
-  PharmacyDisplayWidth,
-  PharmacyDeliveryAreaSetting,
   PharmacyDirectoryRecord,
   PharmacyUserPharmacyRecord,
   DeliveryDriver,
@@ -44,8 +43,6 @@ import {
   ExternalLink,
   Plus,
   Edit3,
-  Trash2,
-  Save,
   Power,
   ShieldAlert,
   ChevronRight,
@@ -58,6 +55,8 @@ import {
   Calendar,
   Layers,
   Maximize2,
+  ArrowRight,
+  Coins,
 } from 'lucide-react';
 
 type PharmacyTabId =
@@ -349,7 +348,15 @@ const PharmacyAttachmentCard: React.FC<PharmacyAttachmentPreviewProps> = ({
 };
 
 export const AdminPharmacyManagement: React.FC = () => {
-  const { activeSection, setActiveSection, hasPermission, showToast, sectionFilter, clearSectionFilter } = useAdmin();
+  const {
+    activeSection,
+    setActiveSection,
+    navigateToSection,
+    hasPermission,
+    showToast,
+    sectionFilter,
+    clearSectionFilter,
+  } = useAdmin();
 
   const canViewDelivery = hasPermission('delivery.view');
   const canManageDelivery = hasPermission('delivery.manage');
@@ -772,248 +779,27 @@ export const AdminPharmacyManagement: React.FC = () => {
   };
 
   // ============================================================================
-  // 5. General Pharmacy Settings & Delivery Areas (`pharmacy_settings` & `pharmacy_delivery_area_settings`)
+  // 5. Centralized Section Status Read-Only Summary (`app_section_settings` -> `pharmacy`)
   // ============================================================================
-  const [pharmacySettings, setPharmacySettings] = useState<PharmacySettingsRecord | null>(null);
-  const [settingsExistsInDb, setSettingsExistsInDb] = useState<boolean>(false);
-  const [serviceEnabledInput, setServiceEnabledInput] = useState<boolean>(true);
-  const [sectionVisibleInput, setSectionVisibleInput] = useState<boolean>(true);
-  const [displayWidthInput, setDisplayWidthInput] = useState<PharmacyDisplayWidth>('full');
+  const [centralPharmacySetting, setCentralPharmacySetting] = useState<AppSectionSetting | null>(null);
   const [isLoadingSettings, setIsLoadingSettings] = useState(false);
-  const [isSavingSettings, setIsSavingSettings] = useState(false);
   const [settingsError, setSettingsError] = useState<string | null>(null);
-
-  const [deliveryAreas, setDeliveryAreas] = useState<PharmacyDeliveryAreaSetting[]>([]);
-  const [isLoadingAreas, setIsLoadingAreas] = useState(false);
-  const [areasError, setAreasError] = useState<string | null>(null);
-  const [areaSearch, setAreaSearch] = useState('');
-  const [areaGovFilter, setAreaGovFilter] = useState('all');
-  const [areaStatusFilter, setAreaStatusFilter] = useState<'all' | 'enabled' | 'disabled'>('all');
-
-  // Add / Edit Delivery Area Modal
-  const [showAreaModal, setShowAreaModal] = useState(false);
-  const [editingArea, setEditingArea] = useState<PharmacyDeliveryAreaSetting | null>(null);
-  const [areaGovCode, setAreaGovCode] = useState('SHG');
-  const [selectedCentersForBulk, setSelectedCentersForBulk] = useState<string[]>([]);
-  const [customCenterName, setCustomCenterName] = useState('');
-  const [areaServiceEnabled, setAreaServiceEnabled] = useState(true);
-  const [areaDeliveryFee, setAreaDeliveryFee] = useState('20');
-  const [isSavingArea, setIsSavingArea] = useState(false);
-
-  // Inline Quick Edit for Area Fee
-  const [inlineAreaId, setInlineAreaId] = useState<string | null>(null);
-  const [inlineAreaFee, setInlineAreaFee] = useState<string>('');
-  const [isSavingInlineArea, setIsSavingInlineArea] = useState(false);
 
   const loadSettingsAndAreas = useCallback(async () => {
     setIsLoadingSettings(true);
-    setIsLoadingAreas(true);
     setSettingsError(null);
-    setAreasError(null);
     try {
-      const [sRes, aRes] = await Promise.all([
-        adminService.getPharmacySettings(),
-        adminService.getPharmacyDeliveryAreas(),
-      ]);
-
-      if (sRes.error) setSettingsError(sRes.error);
-      setSettingsExistsInDb(sRes.existsInDb);
-      if (sRes.settings) {
-        setPharmacySettings(sRes.settings);
-        setServiceEnabledInput(sRes.settings.service_enabled);
-        setSectionVisibleInput(sRes.settings.section_visible);
-        setDisplayWidthInput(sRes.settings.display_width);
+      const sRes = await centralGeoDeliveryService.getAppSectionSettingByKey('pharmacy');
+      if (sRes.error) {
+        setSettingsError(sRes.error);
+        setCentralPharmacySetting(null);
+      } else {
+        setCentralPharmacySetting(sRes.setting || null);
       }
-
-      if (aRes.error) setAreasError(aRes.error);
-      setDeliveryAreas(aRes.areas);
     } finally {
       setIsLoadingSettings(false);
-      setIsLoadingAreas(false);
     }
   }, []);
-
-  const handleSaveGeneralSettings = async () => {
-    setIsSavingSettings(true);
-    setSettingsError(null);
-    try {
-      const res = await adminService.updatePharmacySettings({
-        service_enabled: serviceEnabledInput,
-        section_visible: sectionVisibleInput,
-        display_width: displayWidthInput,
-      });
-
-      if (!res.success || !res.settings) {
-        const msg = res.error || 'فشل حفظ إعدادات الصيدلية في قاعدة البيانات';
-        setSettingsError(msg);
-        showToast(msg, 'error');
-        return;
-      }
-
-      setPharmacySettings(res.settings);
-      setSettingsExistsInDb(true);
-      showToast('تم حفظ إعدادات الصيدلية العامة وتأكيدها في Supabase بنجاح', 'success');
-    } finally {
-      setIsSavingSettings(false);
-    }
-  };
-
-  const openAddAreaModal = () => {
-    if (editingArea || selectedCentersForBulk.length === 0) {
-      const defaultGov = EGYPT_GOVERNORATES.find((g) => g.code === 'SHG') || EGYPT_GOVERNORATES[0];
-      setAreaGovCode(defaultGov.code);
-      setSelectedCentersForBulk([...defaultGov.markazes]);
-      setCustomCenterName('');
-      setAreaServiceEnabled(true);
-      setAreaDeliveryFee('20');
-    }
-    setEditingArea(null);
-    setShowAreaModal(true);
-  };
-
-  const openEditAreaModal = (area: PharmacyDeliveryAreaSetting) => {
-    setEditingArea(area);
-    setAreaGovCode(area.governorate_code || 'SHG');
-    setSelectedCentersForBulk([area.center_name]);
-    setCustomCenterName(area.center_name);
-    setAreaServiceEnabled(area.service_enabled);
-    setAreaDeliveryFee(String(area.delivery_fee ?? 0));
-    setShowAreaModal(true);
-  };
-
-  const handleSaveAreaModal = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const feeNum = Number(areaDeliveryFee);
-    if (!Number.isFinite(feeNum) || feeNum < 0) {
-      showToast('يرجى إدخال رسوم توصيل صحيحة (0 أو أكثر)', 'error');
-      return;
-    }
-
-    const govObj = EGYPT_GOVERNORATES.find((g) => g.code === areaGovCode);
-    const govName = govObj?.name_ar || editingArea?.governorate_name || areaGovCode;
-
-    setIsSavingArea(true);
-    try {
-      if (editingArea) {
-        const res = await adminService.savePharmacyDeliveryArea({
-          id: editingArea.id,
-          governorate_code: areaGovCode,
-          governorate_name: govName,
-          center_name: customCenterName.trim() || editingArea.center_name,
-          service_enabled: areaServiceEnabled,
-          delivery_fee: feeNum,
-        });
-        if (!res.success) {
-          showToast(res.error || 'فشل تحديث المنطقة', 'error');
-          return;
-        }
-        showToast('تم تحديث إعدادات منطقة التوصيل بنجاح', 'success');
-      } else {
-        const centersToSave = [
-          ...selectedCentersForBulk,
-          ...(customCenterName.trim() ? [customCenterName.trim()] : []),
-        ];
-        if (centersToSave.length === 0) {
-          showToast('يرجى اختيار مركز واحد على الأقل أو كتابة اسم المركز', 'error');
-          return;
-        }
-        const res = await adminService.saveBulkPharmacyDeliveryAreas({
-          governorate_code: areaGovCode,
-          governorate_name: govName,
-          centers: centersToSave,
-          service_enabled: areaServiceEnabled,
-          delivery_fee: feeNum,
-        });
-        if (!res.success) {
-          showToast(res.error || 'فشل حفظ المناطق المحددة', 'error');
-          return;
-        }
-        showToast(`تم حفظ وتحديث ${res.savedCount} منطقة توصيل للصيدلية بنجاح`, 'success');
-      }
-
-      setShowAreaModal(false);
-      await Promise.all([loadSettingsAndAreas(), loadStats()]);
-    } finally {
-      setIsSavingArea(false);
-    }
-  };
-
-  const handleToggleAreaEnabled = async (area: PharmacyDeliveryAreaSetting) => {
-    const res = await adminService.savePharmacyDeliveryArea({
-      id: area.id,
-      governorate_code: area.governorate_code,
-      governorate_name: area.governorate_name,
-      center_name: area.center_name,
-      service_enabled: !area.service_enabled,
-      delivery_fee: area.delivery_fee,
-    });
-    if (!res.success) {
-      showToast(res.error || 'تعذر تحديث حالة المنطقة', 'error');
-      return;
-    }
-    showToast(
-      !area.service_enabled
-        ? `تم تفعيل خدمة الصيدلية في مركز ${area.center_name}`
-        : `تم إيقاف خدمة الصيدلية في مركز ${area.center_name}`,
-      'success'
-    );
-    await Promise.all([loadSettingsAndAreas(), loadStats()]);
-  };
-
-  const handleSaveInlineAreaFee = async (area: PharmacyDeliveryAreaSetting) => {
-    const feeNum = Number(inlineAreaFee);
-    if (!Number.isFinite(feeNum) || feeNum < 0) {
-      showToast('قيمة الرسوم غير صالحة', 'error');
-      return;
-    }
-    setIsSavingInlineArea(true);
-    try {
-      const res = await adminService.savePharmacyDeliveryArea({
-        id: area.id,
-        governorate_code: area.governorate_code,
-        governorate_name: area.governorate_name,
-        center_name: area.center_name,
-        service_enabled: area.service_enabled,
-        delivery_fee: feeNum,
-      });
-      if (!res.success) {
-        showToast(res.error || 'فشل تحديث الرسوم', 'error');
-        return;
-      }
-      showToast(`تم تحديث رسوم توصيل مركز ${area.center_name} إلى ${feeNum} ج.م`, 'success');
-      setInlineAreaId(null);
-      await loadSettingsAndAreas();
-    } finally {
-      setIsSavingInlineArea(false);
-    }
-  };
-
-  const handleDeleteArea = async (area: PharmacyDeliveryAreaSetting) => {
-    const res = await adminService.deletePharmacyDeliveryArea(area.id);
-    if (!res.success) {
-      showToast(res.error || 'تعذر حذف المنطقة', 'error');
-      return;
-    }
-    showToast(`تم حذف منطقة ${area.center_name} (${area.governorate_name})`, 'success');
-    await Promise.all([loadSettingsAndAreas(), loadStats()]);
-  };
-
-  const filteredAreas = useMemo(() => {
-    return deliveryAreas.filter((a) => {
-      if (areaGovFilter !== 'all' && a.governorate_name !== areaGovFilter) return false;
-      if (areaStatusFilter === 'enabled' && !a.service_enabled) return false;
-      if (areaStatusFilter === 'disabled' && a.service_enabled) return false;
-      if (areaSearch.trim()) {
-        const q = areaSearch.trim().toLowerCase();
-        return (
-          a.center_name.toLowerCase().includes(q) ||
-          a.governorate_name.toLowerCase().includes(q) ||
-          a.governorate_code.toLowerCase().includes(q)
-        );
-      }
-      return true;
-    });
-  }, [deliveryAreas, areaGovFilter, areaStatusFilter, areaSearch]);
 
   // ============================================================================
   // 6. Fullscreen Lightbox for Private `pharmacy` Bucket Attachments
@@ -1244,8 +1030,8 @@ export const AdminPharmacyManagement: React.FC = () => {
                 }`}
               />
               <div className="truncate">
-                <div className="text-xs font-bold truncate">الإعدادات والمناطق</div>
-                <div className="text-[10px] text-slate-400 truncate">الظهور ورسوم المراكز</div>
+                <div className="text-xs font-bold truncate">إعدادات الصيدلية</div>
+                <div className="text-[10px] text-slate-400 truncate">منقولة للنظام المركزي</div>
               </div>
             </div>
             <span className="px-2 py-0.5 rounded-lg text-[11px] font-black font-mono bg-slate-900 text-emerald-300 border border-slate-700">
@@ -2176,329 +1962,98 @@ export const AdminPharmacyManagement: React.FC = () => {
       )}
 
       {/* =================================================================== */}
-      {/* TAB 4: GENERAL SETTINGS & DELIVERY AREAS (`pharmacy_settings` & `pharmacy_delivery_area_settings`) */}
+      {/* TAB 4: CENTRALIZED MIGRATION NOTICE (REPLACED LEGACY PHARMACY SETTINGS) */}
       {/* =================================================================== */}
       {currentTab === 'pharmacy_settings' && (
         <div className="space-y-6">
-          {/* Card 1: General Pharmacy Settings (`pharmacy_settings`) */}
-          <div className="bg-slate-900/90 border border-slate-800 rounded-3xl p-5 sm:p-6 space-y-5">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 border-b border-slate-800">
-              <div>
-                <h2 className="text-base font-black text-white flex items-center gap-2">
-                  <Sliders className="w-4 h-4 text-emerald-400" />
-                  <span>إعدادات الصيدلية العامة (جدول pharmacy_settings)</span>
-                </h2>
-                <p className="text-xs text-slate-400 mt-0.5">
-                  التحكم المركزي في تفعيل خدمة الصيدلية، إظهار أو إخفاء القسم في تطبيق طلبات البيت، وحجم العرض (Full / Half)
+          <div className="bg-slate-900/90 border border-emerald-500/35 rounded-3xl p-5 sm:p-6 space-y-5">
+            <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 pb-4 border-b border-slate-800">
+              <div className="space-y-1.5">
+                <div className="flex flex-wrap items-center gap-2">
+                  <h2 className="text-base font-black text-white flex items-center gap-2">
+                    <Sliders className="w-4 h-4 text-emerald-400" />
+                    <span>تم نقل إعدادات وتغطية قسم الصيدلية إلى النظام المركزي</span>
+                  </h2>
+                  <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
+                    app_section_settings + delivery_area_tariffs
+                  </span>
+                </div>
+                <p className="text-xs text-slate-400 leading-relaxed">
+                  لم تعد إعدادات الصيدلية تُعدّل عبر جدولي{' '}
+                  <code className="font-mono text-slate-300">pharmacy_settings</code> أو{' '}
+                  <code className="font-mono text-slate-300">pharmacy_delivery_area_settings</code>.
+                  يُدار تشغيل القسم وظهوره وتفعيله للتوصيل وعرض البطاقة حصرياً عبر{' '}
+                  <code className="font-mono text-emerald-300">app_section_settings</code>، كما تُدار مناطق التغطية والرسوم عبر{' '}
+                  <code className="font-mono text-sky-300">delivery_area_tariffs</code>.
                 </p>
               </div>
 
-              {pharmacySettings && (
-                <div className="text-[11px] text-slate-400 text-left">
-                  <div>آخر تحديث: {formatDateTimeAr(pharmacySettings.updated_at)}</div>
-                  {!settingsExistsInDb && (
-                    <span className="text-amber-400 font-bold">
-                      (لم يُنشأ صف بعد — سيتم إنشاؤه عند الحفظ)
-                    </span>
-                  )}
-                </div>
-              )}
+              <div className="flex flex-wrap items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => navigateToSection('central_section_settings')}
+                  className="px-4 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-xs font-black flex items-center gap-2 cursor-pointer transition"
+                >
+                  <span>فتح إعدادات الأقسام</span>
+                  <ArrowRight className="w-4 h-4 rotate-180" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => navigateToSection('central_pricing')}
+                  className="px-4 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-white text-xs font-bold flex items-center gap-2 cursor-pointer transition"
+                >
+                  <Coins className="w-4 h-4 text-emerald-400" />
+                  <span>التسعير والمناطق المركزية</span>
+                </button>
+              </div>
             </div>
 
             {settingsError && (
               <div className="p-4 rounded-2xl bg-rose-950/40 border border-rose-500/40 text-rose-200 text-xs flex items-start gap-2.5">
                 <AlertCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
-                <div>
-                  <div className="font-bold">تنبيه من قاعدة البيانات (Supabase RLS / Query):</div>
-                  <div>{settingsError}</div>
-                </div>
+                <div>{settingsError}</div>
               </div>
             )}
 
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              {/* Toggle 1: service_enabled */}
-              <div className="p-4 rounded-2xl bg-slate-950/80 border border-slate-800 flex items-center justify-between gap-3">
-                <div>
-                  <div className="text-xs font-bold text-white">تفعيل خدمة الصيدلية</div>
-                  <div className="text-[11px] text-slate-400 mt-0.5">
-                    عمود <code className="text-emerald-300 font-mono">service_enabled</code> — السماح باستقبال طلبات الصيدلية
-                  </div>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => setServiceEnabledInput((v) => !v)}
-                  className={`px-3.5 py-2 rounded-xl text-xs font-bold border cursor-pointer transition-all ${
-                    serviceEnabledInput
-                      ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
-                      : 'bg-rose-500/20 text-rose-300 border-rose-500/40'
-                  }`}
-                >
-                  {serviceEnabledInput ? 'مفعلة (Enabled)' : 'متوقفة (Disabled)'}
-                </button>
+            {isLoadingSettings ? (
+              <div className="py-6 text-center text-xs text-slate-400 flex items-center justify-center gap-2">
+                <RefreshCw className="w-4 h-4 animate-spin text-emerald-400" />
+                <span>جاري قراءة الحالة المركزية الحالية لقسم الصيدلية...</span>
               </div>
-
-              {/* Toggle 2: section_visible */}
-              <div className="p-4 rounded-2xl bg-slate-950/80 border border-slate-800 flex items-center justify-between gap-3">
-                <div>
-                  <div className="text-xs font-bold text-white">إظهار القسم في تطبيق البيت</div>
-                  <div className="text-[11px] text-slate-400 mt-0.5">
-                    عمود <code className="text-emerald-300 font-mono">section_visible</code> — إظهار أو إخفاء بطاقة الصيدلية
-                  </div>
+            ) : centralPharmacySetting ? (
+              <div className="grid grid-cols-2 md:grid-cols-5 gap-3 text-xs">
+                <div className="p-3.5 rounded-2xl bg-slate-950/80 border border-slate-800">
+                  <span className="text-[10px] text-slate-400 block">تشغيل القسم (section_enabled)</span>
+                  <span className={`font-bold mt-1 block ${centralPharmacySetting.section_enabled ? 'text-emerald-300' : 'text-rose-300'}`}>
+                    {centralPharmacySetting.section_enabled ? 'مفعّل' : 'متوقف'}
+                  </span>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => setSectionVisibleInput((v) => !v)}
-                  className={`px-3.5 py-2 rounded-xl text-xs font-bold border cursor-pointer transition-all ${
-                    sectionVisibleInput
-                      ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
-                      : 'bg-slate-800 text-slate-400 border-slate-700'
-                  }`}
-                >
-                  {sectionVisibleInput ? 'ظاهر (Visible)' : 'مخفي (Hidden)'}
-                </button>
-              </div>
-
-              {/* Select 3: display_width */}
-              <div className="p-4 rounded-2xl bg-slate-950/80 border border-slate-800 flex flex-col justify-between gap-2">
-                <div>
-                  <div className="text-xs font-bold text-white">حجم عرض القسم (Display Width)</div>
-                  <div className="text-[11px] text-slate-400">
-                    عمود <code className="text-emerald-300 font-mono">display_width</code>
-                  </div>
+                <div className="p-3.5 rounded-2xl bg-slate-950/80 border border-slate-800">
+                  <span className="text-[10px] text-slate-400 block">الظهور للعميل (section_visible)</span>
+                  <span className={`font-bold mt-1 block ${centralPharmacySetting.section_visible ? 'text-sky-300' : 'text-slate-400'}`}>
+                    {centralPharmacySetting.section_visible ? 'ظاهر' : 'مخفي'}
+                  </span>
                 </div>
-                <div className="grid grid-cols-2 gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setDisplayWidthInput('full')}
-                    className={`py-2 px-3 rounded-xl text-xs font-bold border cursor-pointer ${
-                      displayWidthInput === 'full'
-                        ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
-                        : 'bg-slate-900 text-slate-400 border-slate-800'
-                    }`}
-                  >
-                    عرض كامل (full)
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setDisplayWidthInput('half')}
-                    className={`py-2 px-3 rounded-xl text-xs font-bold border cursor-pointer ${
-                      displayWidthInput === 'half'
-                        ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
-                        : 'bg-slate-900 text-slate-400 border-slate-800'
-                    }`}
-                  >
-                    نصف عرض (half)
-                  </button>
+                <div className="p-3.5 rounded-2xl bg-slate-950/80 border border-slate-800">
+                  <span className="text-[10px] text-slate-400 block">خدمة التوصيل (delivery_enabled)</span>
+                  <span className={`font-bold mt-1 block ${centralPharmacySetting.delivery_enabled ? 'text-emerald-300' : 'text-amber-300'}`}>
+                    {centralPharmacySetting.delivery_enabled ? 'مفعل' : 'متوقف'}
+                  </span>
+                </div>
+                <div className="p-3.5 rounded-2xl bg-slate-950/80 border border-slate-800">
+                  <span className="text-[10px] text-slate-400 block">عرض البطاقة (display_width)</span>
+                  <span className="font-bold font-mono text-emerald-300 mt-1 block">
+                    {centralPharmacySetting.display_width || 'null'}
+                  </span>
+                </div>
+                <div className="p-3.5 rounded-2xl bg-slate-950/80 border border-slate-800">
+                  <span className="text-[10px] text-slate-400 block">العرض عند التعطيل</span>
+                  <span className="font-bold font-mono text-amber-300 mt-1 block">
+                    {centralPharmacySetting.disabled_display_mode || 'null'}
+                  </span>
                 </div>
               </div>
-            </div>
-
-            <div className="flex items-center justify-end pt-2">
-              <button
-                type="button"
-                onClick={handleSaveGeneralSettings}
-                disabled={isSavingSettings}
-                className="px-5 py-2.5 rounded-2xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold flex items-center gap-2 cursor-pointer transition-colors shadow-lg shadow-emerald-950/50 disabled:opacity-50"
-              >
-                {isSavingSettings ? (
-                  <RefreshCw className="w-4 h-4 animate-spin" />
-                ) : (
-                  <Save className="w-4 h-4" />
-                )}
-                <span>حفظ الإعدادات العامة في Supabase</span>
-              </button>
-            </div>
-          </div>
-
-          {/* Card 2: Delivery Area Settings (`pharmacy_delivery_area_settings`) */}
-          <div className="bg-slate-900/90 border border-slate-800 rounded-3xl p-5 sm:p-6 space-y-4">
-            <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 pb-4 border-t-0 border-b border-slate-800">
-              <div>
-                <h2 className="text-base font-black text-white flex items-center gap-2">
-                  <MapPin className="w-4 h-4 text-teal-400" />
-                  <span>إعدادات مناطق التوصيل والرسوم (pharmacy_delivery_area_settings)</span>
-                </h2>
-                <p className="text-xs text-slate-400 mt-0.5">
-                  تحديد المحافظات والمراكز المغطاة بخدمة الصيدلية ورسوم التوصيل لكل مركز
-                </p>
-              </div>
-
-              <button
-                type="button"
-                onClick={openAddAreaModal}
-                className="px-4 py-2.5 rounded-2xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer transition-colors shadow-lg shadow-teal-950/50 self-start lg:self-center"
-              >
-                <Plus className="w-4 h-4" />
-                <span>إضافة / ضبط محافظة ومراكزها</span>
-              </button>
-            </div>
-
-            {/* Area Filters */}
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-              <div className="relative">
-                <Search className="w-4 h-4 text-slate-400 absolute right-3.5 top-1/2 -translate-y-1/2" />
-                <input
-                  type="text"
-                  value={areaSearch}
-                  onChange={(e) => setAreaSearch(e.target.value)}
-                  placeholder="بحث باسم المحافظة أو المركز..."
-                  className="w-full bg-slate-950 border border-slate-800 rounded-2xl pr-10 pl-3 py-2 text-xs text-white placeholder-slate-500 outline-none"
-                />
-              </div>
-
-              <select
-                value={areaGovFilter}
-                onChange={(e) => setAreaGovFilter(e.target.value)}
-                className="w-full bg-slate-950 border border-slate-800 rounded-2xl px-3 py-2 text-xs text-white outline-none"
-              >
-                <option value="all">كل المحافظات المسجلة</option>
-                {Array.from(new Set(deliveryAreas.map((a) => a.governorate_name))).map((g) => (
-                  <option key={g} value={g}>
-                    {g}
-                  </option>
-                ))}
-              </select>
-
-              <select
-                value={areaStatusFilter}
-                onChange={(e) => setAreaStatusFilter(e.target.value as any)}
-                className="w-full bg-slate-950 border border-slate-800 rounded-2xl px-3 py-2 text-xs text-white outline-none"
-              >
-                <option value="all">جميع الحالات (مفعل ومعطل)</option>
-                <option value="enabled">المراكز المفعلة فقط</option>
-                <option value="disabled">المراكز المعطلة فقط</option>
-              </select>
-            </div>
-
-            {areasError && (
-              <div className="p-4 rounded-2xl bg-rose-950/40 border border-rose-500/40 text-rose-200 text-xs flex items-center gap-2">
-                <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
-                <span>{areasError}</span>
-              </div>
-            )}
-
-            {isLoadingAreas ? (
-              <div className="p-10 text-center space-y-2">
-                <RefreshCw className="w-6 h-6 text-teal-400 animate-spin mx-auto" />
-                <p className="text-xs text-slate-400">جاري تحميل إعدادات المناطق...</p>
-              </div>
-            ) : filteredAreas.length === 0 ? (
-              <div className="p-10 text-center space-y-2">
-                <MapPin className="w-8 h-8 text-slate-600 mx-auto" />
-                <h3 className="text-sm font-bold text-slate-300">لا توجد مناطق مسجلة مطابقة</h3>
-                <p className="text-xs text-slate-500">
-                  اضغط على «إضافة / ضبط محافظة ومراكزها» لإضافة مراكز المحافظة وتحديد رسوم التوصيل.
-                </p>
-              </div>
-            ) : (
-              <div className="overflow-x-auto">
-                <table className="w-full text-right text-xs">
-                  <thead className="bg-slate-950/90 text-slate-400 border-b border-slate-800">
-                    <tr>
-                      <th className="py-3 px-4 font-bold">كود المحافظة</th>
-                      <th className="py-3 px-4 font-bold">المحافظة</th>
-                      <th className="py-3 px-4 font-bold">المركز / المدينة</th>
-                      <th className="py-3 px-4 font-bold">رسوم التوصيل (delivery_fee)</th>
-                      <th className="py-3 px-4 font-bold">حالة الخدمة</th>
-                      <th className="py-3 px-4 font-bold">آخر تحديث</th>
-                      <th className="py-3 px-4 font-bold text-center">إجراءات</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-800/70">
-                    {filteredAreas.map((area) => (
-                      <tr key={area.id} className="hover:bg-slate-800/40">
-                        <td className="py-3 px-4 font-mono text-slate-400">
-                          {area.governorate_code}
-                        </td>
-                        <td className="py-3 px-4 font-bold text-white">{area.governorate_name}</td>
-                        <td className="py-3 px-4 font-bold text-teal-300">{area.center_name}</td>
-                        <td className="py-3 px-4">
-                          {inlineAreaId === area.id ? (
-                            <div className="flex items-center gap-1.5">
-                              <input
-                                type="number"
-                                min="0"
-                                step="0.5"
-                                value={inlineAreaFee}
-                                onChange={(e) => setInlineAreaFee(e.target.value)}
-                                className="w-24 bg-slate-950 border border-teal-500/50 rounded-lg px-2 py-1 text-xs text-white font-mono"
-                              />
-                              <button
-                                type="button"
-                                disabled={isSavingInlineArea}
-                                onClick={() => handleSaveInlineAreaFee(area)}
-                                className="p-1.5 rounded-lg bg-emerald-600 text-white cursor-pointer"
-                              >
-                                <Check className="w-3.5 h-3.5" />
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => setInlineAreaId(null)}
-                                className="p-1.5 rounded-lg bg-slate-800 text-slate-300 cursor-pointer"
-                              >
-                                <X className="w-3.5 h-3.5" />
-                              </button>
-                            </div>
-                          ) : (
-                            <div className="flex items-center gap-2">
-                              <span className="font-mono font-bold text-emerald-300">
-                                {Number(area.delivery_fee).toLocaleString()} ج.م
-                              </span>
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setInlineAreaId(area.id);
-                                  setInlineAreaFee(String(area.delivery_fee ?? 0));
-                                }}
-                                className="text-[10px] text-slate-400 hover:text-white underline cursor-pointer"
-                              >
-                                تعديل سريع
-                              </button>
-                            </div>
-                          )}
-                        </td>
-                        <td className="py-3 px-4">
-                          <button
-                            type="button"
-                            onClick={() => handleToggleAreaEnabled(area)}
-                            className={`px-2.5 py-1 rounded-xl text-[11px] font-bold border cursor-pointer ${
-                              area.service_enabled
-                                ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30'
-                                : 'bg-rose-500/15 text-rose-300 border-rose-500/30'
-                            }`}
-                          >
-                            {area.service_enabled ? 'مفعلة' : 'معطلة'}
-                          </button>
-                        </td>
-                        <td className="py-3 px-4 text-[11px] text-slate-400">
-                          {formatDateTimeAr(area.updated_at)}
-                        </td>
-                        <td className="py-3 px-4 text-center">
-                          <div className="flex items-center justify-center gap-1.5">
-                            <button
-                              type="button"
-                              onClick={() => openEditAreaModal(area)}
-                              className="p-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 cursor-pointer"
-                              title="تعديل"
-                            >
-                              <Edit3 className="w-3.5 h-3.5" />
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => handleDeleteArea(area)}
-                              className="p-1.5 rounded-xl bg-rose-950/60 hover:bg-rose-900/60 text-rose-300 border border-rose-500/30 cursor-pointer"
-                              title="حذف"
-                            >
-                              <Trash2 className="w-3.5 h-3.5" />
-                            </button>
-                          </div>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
+            ) : null}
           </div>
         </div>
       )}
@@ -3409,185 +2964,6 @@ export const AdminPharmacyManagement: React.FC = () => {
                 >
                   {isSavingPharmacy && <RefreshCw className="w-3.5 h-3.5 animate-spin" />}
                   <span>حفظ الصيدلية</span>
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-
-      {/* =================================================================== */}
-      {/* MODAL 4: ADD / EDIT DELIVERY AREA (`pharmacy_delivery_area_settings`)*/}
-      {/* =================================================================== */}
-      {showAreaModal && (
-        <div
-          className="fixed inset-0 z-50 bg-slate-950/85 backdrop-blur-sm flex items-end sm:items-center justify-center sm:p-4 animate-in fade-in duration-150"
-          onClick={() => !isSavingArea && setShowAreaModal(false)}
-        >
-          <div
-            className="bg-slate-900 border-t sm:border border-slate-800 rounded-t-3xl sm:rounded-3xl w-full max-w-xl max-h-[92vh] sm:max-h-[90vh] flex flex-col overflow-hidden shadow-2xl animate-in slide-in-from-bottom-4 sm:zoom-in-95 duration-200"
-            onClick={(e) => e.stopPropagation()}
-          >
-            {/* Mobile Drag Handle */}
-            <div className="sm:hidden flex justify-center pt-3 pb-1 bg-slate-950 shrink-0">
-              <div className="w-12 h-1.5 rounded-full bg-slate-700/80" />
-            </div>
-
-            <div className="p-4 sm:p-5 bg-slate-950 border-b border-slate-800 flex items-center justify-between shrink-0">
-              <h3 className="text-sm font-black text-white">
-                {editingArea
-                  ? `تعديل منطقة توصيل: ${editingArea.center_name} (${editingArea.governorate_name})`
-                  : 'إضافة / ضبط مناطق توصيل الصيدلية'}
-              </h3>
-              <button
-                type="button"
-                onClick={() => setShowAreaModal(false)}
-                className="p-1.5 rounded-xl bg-slate-900 text-slate-400 hover:text-white cursor-pointer"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-
-            <form onSubmit={handleSaveAreaModal} className="flex flex-col flex-1 min-h-0 text-xs">
-              <div className="p-4 sm:p-5 space-y-4 overflow-y-auto flex-1 overscroll-contain">
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <div>
-                    <label className="block font-bold text-slate-300 mb-1">المحافظة</label>
-                    <select
-                      value={areaGovCode}
-                      disabled={Boolean(editingArea)}
-                      onChange={(e) => {
-                        const code = e.target.value;
-                        setAreaGovCode(code);
-                        const gov = EGYPT_GOVERNORATES.find((g) => g.code === code);
-                        setSelectedCentersForBulk(gov ? [...gov.markazes] : []);
-                      }}
-                      className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2.5 text-white"
-                    >
-                      {EGYPT_GOVERNORATES.map((g) => (
-                        <option key={g.code} value={g.code}>
-                          {g.name_ar} ({g.code})
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-
-                  <div>
-                    <label className="block font-bold text-slate-300 mb-1">
-                      رسوم التوصيل (ج.م) *
-                    </label>
-                    <input
-                      type="number"
-                      min="0"
-                      step="0.5"
-                      required
-                      value={areaDeliveryFee}
-                      onChange={(e) => setAreaDeliveryFee(e.target.value)}
-                      className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2.5 text-white font-mono"
-                    />
-                  </div>
-                </div>
-
-                {!editingArea && (
-                  <div className="space-y-2">
-                    <div className="flex items-center justify-between">
-                      <label className="font-bold text-slate-300">
-                        اختر المراكز المشمولة ({selectedCentersForBulk.length})
-                      </label>
-                      <div className="flex items-center gap-2">
-                        <button
-                          type="button"
-                          onClick={() => {
-                            const gov = EGYPT_GOVERNORATES.find((g) => g.code === areaGovCode);
-                            setSelectedCentersForBulk(gov ? [...gov.markazes] : []);
-                          }}
-                          className="text-[11px] text-emerald-400 hover:underline cursor-pointer"
-                        >
-                          تحديد الكل
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setSelectedCentersForBulk([])}
-                          className="text-[11px] text-slate-400 hover:underline cursor-pointer"
-                        >
-                          إلغاء الكل
-                        </button>
-                      </div>
-                    </div>
-
-                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 max-h-44 overflow-y-auto p-2.5 rounded-2xl bg-slate-950 border border-slate-800">
-                      {(
-                        EGYPT_GOVERNORATES.find((g) => g.code === areaGovCode)?.markazes || []
-                      ).map((m) => {
-                        const checked = selectedCentersForBulk.includes(m);
-                        return (
-                          <label
-                            key={m}
-                            className={`p-2 rounded-xl border flex items-center gap-2 cursor-pointer ${
-                              checked
-                                ? 'bg-emerald-500/15 border-emerald-500/40 text-emerald-200'
-                                : 'bg-slate-900 border-slate-800 text-slate-400'
-                            }`}
-                          >
-                            <input
-                              type="checkbox"
-                              checked={checked}
-                              onChange={(e) => {
-                                if (e.target.checked) {
-                                  setSelectedCentersForBulk((prev) => [...prev, m]);
-                                } else {
-                                  setSelectedCentersForBulk((prev) => prev.filter((x) => x !== m));
-                                }
-                              }}
-                            />
-                            <span className="truncate">{m}</span>
-                          </label>
-                        );
-                      })}
-                    </div>
-                  </div>
-                )}
-
-                <div>
-                  <label className="block font-bold text-slate-300 mb-1">
-                    {editingArea ? 'اسم المركز *' : 'أو إضافة مركز إضافي يدوياً (اختياري)'}
-                  </label>
-                  <input
-                    type="text"
-                    value={customCenterName}
-                    onChange={(e) => setCustomCenterName(e.target.value)}
-                    placeholder="اكتب اسم المركز..."
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2.5 text-white"
-                  />
-                </div>
-
-                <label className="flex items-center gap-2 cursor-pointer p-3 rounded-xl bg-slate-950 border border-slate-800">
-                  <input
-                    type="checkbox"
-                    checked={areaServiceEnabled}
-                    onChange={(e) => setAreaServiceEnabled(e.target.checked)}
-                  />
-                  <span className="font-bold text-emerald-300">
-                    تفعيل خدمة توصيل الصيدلية في هذه المنطقة (service_enabled = true)
-                  </span>
-                </label>
-              </div>
-
-              <div className="flex items-center justify-end gap-2 p-4 border-t border-slate-800 bg-slate-950/95 backdrop-blur shrink-0 sticky bottom-0 z-10">
-                <button
-                  type="button"
-                  onClick={() => setShowAreaModal(false)}
-                  className="px-4 py-2.5 rounded-xl bg-slate-800 text-slate-300 font-bold cursor-pointer"
-                >
-                  إغلاق
-                </button>
-                <button
-                  type="submit"
-                  disabled={isSavingArea}
-                  className="px-5 py-2.5 rounded-xl bg-teal-600 hover:bg-teal-500 text-white font-bold flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
-                >
-                  {isSavingArea && <RefreshCw className="w-3.5 h-3.5 animate-spin" />}
-                  <span>حفظ إعدادات المنطقة</span>
                 </button>
               </div>
             </form>

@@ -29,13 +29,13 @@ import {
   RestaurantCollectionReceipt,
   RestaurantComplaint,
   RestaurantOwnershipHistory,
-  RestaurantSectionSettings,
   RestaurantOverviewStats,
   RestaurantDispatchSettings,
   RestaurantCancellationRequest,
   ReassignableDriver,
 } from '../types/restaurantAdminTypes';
 import {
+  AppSectionSetting,
   CentralScopeLevel,
   CentralRestaurantSummary,
   DeliveryAreaTariff,
@@ -166,7 +166,8 @@ export const AdminRestaurantManagement: React.FC = () => {
   const [settlements, setSettlements] = useState<RestaurantSettlement[]>([]);
   const [complaints, setComplaints] = useState<RestaurantComplaint[]>([]);
   const [ownershipHistory, setOwnershipHistory] = useState<RestaurantOwnershipHistory[]>([]);
-  const [sectionSettings, setSectionSettings] = useState<RestaurantSectionSettings | null>(null);
+  const [centralReadyFoodSetting, setCentralReadyFoodSetting] = useState<AppSectionSetting | null>(null);
+  const [centralSectionSettingError, setCentralSectionSettingError] = useState<string | null>(null);
 
   // Common UI State
   const [isLoading, setIsLoading] = useState(false);
@@ -424,13 +425,18 @@ export const AdminRestaurantManagement: React.FC = () => {
 
   const loadSettingsAndHistory = useCallback(async () => {
     setIsLoading(true);
+    setCentralSectionSettingError(null);
     const [secRes, ownRes] = await Promise.all([
-      restaurantAdminService.getSectionSettings(),
+      centralGeoDeliveryService.getAppSectionSettingByKey('ready_food'),
       restaurantAdminService.getOwnershipHistory(selectedRestaurantFilter),
     ]);
-    if (secRes.error) showToast(secRes.error, 'error');
+    if (secRes.error) {
+      setCentralSectionSettingError(secRes.error);
+      setCentralReadyFoodSetting(null);
+    } else {
+      setCentralReadyFoodSetting(secRes.setting || null);
+    }
     if (ownRes.error) showToast(ownRes.error, 'error');
-    setSectionSettings(secRes.settings || null);
     setOwnershipHistory(ownRes.history || []);
     setIsLoading(false);
   }, [selectedRestaurantFilter, showToast]);
@@ -3175,229 +3181,68 @@ export const AdminRestaurantManagement: React.FC = () => {
           ===================================================================== */}
       {currentTab === 'restaurant_settings' && (
         <div className="space-y-6">
-          <div className="bg-slate-900/80 border border-slate-800 rounded-3xl p-5 space-y-4">
-            <h3 className="text-sm font-bold text-white flex items-center gap-2">
-              <Sliders className="w-4 h-4 text-amber-400" />
-              <span>إعدادات قسم المطاعم العامة</span>
-            </h3>
-
-            {/* Architecture & Routing Status Overview Card */}
-            {sectionSettings && (
-              <div className="bg-slate-950/80 border border-slate-800 rounded-2xl p-4.5 space-y-3">
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-800/80 pb-3">
-                  <div className="flex items-center gap-2.5">
-                    <div className="w-8 h-8 rounded-xl bg-amber-500/15 border border-amber-500/30 flex items-center justify-center text-amber-400 shrink-0">
-                      <ShieldAlert className="w-4 h-4" />
-                    </div>
-                    <div>
-                      <h4 className="text-xs font-black text-white">
-                        حالة منظومة قسم المطاعم والتوجيه التشغيلي
-                      </h4>
-                      <p className="text-[11px] text-slate-400">
-                        التحكم الإداري المستقل في مسار استقبال الطلبات ورؤية الواجهة للعملاء
-                      </p>
-                    </div>
-                  </div>
-
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span
-                      className={`px-2.5 py-1 rounded-xl text-[11px] font-bold border flex items-center gap-1.5 ${
-                        sectionSettings.section_enabled
-                          ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30'
-                          : 'bg-rose-500/15 text-rose-300 border-rose-500/30'
-                      }`}
-                    >
-                      <span className={`w-2 h-2 rounded-full ${sectionSettings.section_enabled ? 'bg-emerald-400' : 'bg-rose-400'}`} />
-                      <span>{sectionSettings.section_enabled ? 'استقبال الطلبات: مفعّل' : 'استقبال الطلبات: معطّل'}</span>
-                    </span>
-
-                    <span
-                      className={`px-2.5 py-1 rounded-xl text-[11px] font-bold border flex items-center gap-1.5 ${
-                        sectionSettings.section_visibility === 'visible'
-                          ? 'bg-blue-500/15 text-blue-300 border-blue-500/30'
-                          : 'bg-slate-800 text-slate-400 border-slate-700'
-                      }`}
-                    >
-                      <Eye className="w-3.5 h-3.5" />
-                      <span>{sectionSettings.section_visibility === 'visible' ? 'الظهور بالتطبيق: مرئي' : 'الظهور بالتطبيق: مخفي'}</span>
-                    </span>
-
-                    <span className="px-2.5 py-1 rounded-xl text-[11px] font-bold bg-slate-800/90 text-amber-300 border border-slate-700">
-                      نمط التعطيل: {sectionSettings.disabled_display_mode === 'show_disabled' ? 'إظهار شارة غير متاح' : 'إخفاء القسم تلقائياً'}
-                    </span>
-                  </div>
+          {/* Central Migration Card for Ready Food Section Settings (app_section_settings) */}
+          <div className="bg-slate-900/80 border border-emerald-500/35 rounded-3xl p-5 sm:p-6 space-y-4">
+            <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+              <div className="space-y-1.5">
+                <div className="flex flex-wrap items-center gap-2">
+                  <h3 className="text-sm sm:text-base font-black text-white flex items-center gap-2">
+                    <Sliders className="w-4 h-4 text-emerald-400" />
+                    <span>تم نقل إعدادات قسم المطاعم إلى النظام المركزي</span>
+                  </h3>
+                  <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
+                    app_section_settings (ready_food)
+                  </span>
                 </div>
+                <p className="text-xs text-slate-400 leading-relaxed">
+                  لم تعد إعدادات تشغيل قسم المطاعم وظهوره وحالة التوصيل العامة وطريقة العرض عند التعطيل تُدار من جدول{' '}
+                  <span className="font-mono text-slate-300">restaurant_section_settings</span>. تتم الإدارة والتعديل الآن حصرياً من تبويب «إعدادات الأقسام» داخل الإدارة المركزية.
+                </p>
+              </div>
 
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
-                  <div className="p-3 rounded-xl bg-slate-900/60 border border-slate-800/80 space-y-1">
-                    <div className="font-bold text-amber-400 flex items-center gap-1.5 text-[11px]">
-                      <Sliders className="w-3.5 h-3.5" />
-                      <span>فصل الظهور عن التشغيل (Decoupled Visibility):</span>
-                    </div>
-                    <p className="text-[11px] text-slate-400 leading-relaxed">
-                      حالة الظهور (<span className="text-slate-200 font-mono">section_visibility</span>) تتحكم في إظهار أيقونة وقسم المطاعم للمستخدمين في التطبيق. بينما حالة التشغيل (<span className="text-slate-200 font-mono">section_enabled</span>) تتحكم في فتح أو إغلاق مسار استقبال الطلبات الجديدة.
-                    </p>
-                  </div>
+              <button
+                type="button"
+                onClick={() => navigateToSection('central_section_settings')}
+                className="px-4 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-xs font-black flex items-center gap-2 shrink-0 cursor-pointer transition"
+              >
+                <span>فتح إعدادات الأقسام المركزية</span>
+                <ArrowRight className="w-4 h-4 rotate-180" />
+              </button>
+            </div>
 
-                  <div className="p-3 rounded-xl bg-slate-900/60 border border-slate-800/80 space-y-1">
-                    <div className="font-bold text-emerald-400 flex items-center gap-1.5 text-[11px]">
-                      <Navigation className="w-3.5 h-3.5" />
-                      <span>التوثيق المعماري ومطابقة قاعدة البيانات:</span>
-                    </div>
-                    <p className="text-[11px] text-slate-400 leading-relaxed">
-                      جدول <span className="text-slate-200 font-mono">restaurant_section_settings</span> يعتمد حصراً على الأعمدة الرسمية: <span className="text-slate-300 font-mono">section_enabled, section_visibility, disabled_display_mode</span>. ولا يحتوي على عمود رسالة نصية مخصصة (<span className="text-rose-300 font-mono">disabled_message</span>)، والتطبيق يعتمد القيم المعتمدة نظامياً.
-                    </p>
-                  </div>
+            {centralSectionSettingError ? (
+              <div className="p-3.5 rounded-2xl bg-rose-950/40 border border-rose-500/35 text-xs text-rose-200 flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
+                <span>{centralSectionSettingError}</span>
+              </div>
+            ) : centralReadyFoodSetting ? (
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-2 border-t border-slate-800/80 text-xs">
+                <div className="p-3 rounded-2xl bg-slate-950/75 border border-slate-800">
+                  <span className="text-[10px] text-slate-400 block">تشغيل القسم (section_enabled)</span>
+                  <span className={`font-bold mt-1 block ${centralReadyFoodSetting.section_enabled ? 'text-emerald-300' : 'text-rose-300'}`}>
+                    {centralReadyFoodSetting.section_enabled ? 'مفعّل' : 'متوقف'}
+                  </span>
+                </div>
+                <div className="p-3 rounded-2xl bg-slate-950/75 border border-slate-800">
+                  <span className="text-[10px] text-slate-400 block">الظهور بالتطبيق (section_visible)</span>
+                  <span className={`font-bold mt-1 block ${centralReadyFoodSetting.section_visible ? 'text-sky-300' : 'text-slate-400'}`}>
+                    {centralReadyFoodSetting.section_visible ? 'ظاهر للعملاء' : 'مخفي'}
+                  </span>
+                </div>
+                <div className="p-3 rounded-2xl bg-slate-950/75 border border-slate-800">
+                  <span className="text-[10px] text-slate-400 block">التوصيل للقسم (delivery_enabled)</span>
+                  <span className={`font-bold mt-1 block ${centralReadyFoodSetting.delivery_enabled ? 'text-emerald-300' : 'text-amber-300'}`}>
+                    {centralReadyFoodSetting.delivery_enabled ? 'مفعّل' : 'متوقف'}
+                  </span>
+                </div>
+                <div className="p-3 rounded-2xl bg-slate-950/75 border border-slate-800">
+                  <span className="text-[10px] text-slate-400 block">العرض عند التعطيل (disabled_display_mode)</span>
+                  <span className="font-bold font-mono text-amber-300 mt-1 block">
+                    {centralReadyFoodSetting.disabled_display_mode || 'null'}
+                  </span>
                 </div>
               </div>
-            )}
-
-            {!sectionSettings ? (
-              <div className="p-8 text-center text-xs text-slate-500">
-                لم يتم العثور على سجل إعدادات القسم الحالي في جدول restaurant_section_settings.
-              </div>
-            ) : (
-              <div className="space-y-4">
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-                  {/* Setting 1: Section Enabled */}
-                  <div className="p-4 rounded-2xl bg-slate-950/60 border border-slate-800 space-y-2">
-                    <div className="text-xs text-slate-400 font-bold">1. حالة تشغيل قسم المطاعم</div>
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="text-xs text-slate-300 font-medium">
-                        {sectionSettings.section_enabled ? 'مفعل ومتاح حالياً' : 'معطل مؤقتاً'}
-                      </span>
-                      <button
-                        type="button"
-                        disabled={isSaving}
-                        onClick={async () => {
-                          if (!hasPermission('restaurants.manage')) {
-                            showToast('ليس لديك صلاحية لتعديل إعدادات القسم', 'error');
-                            return;
-                          }
-                          setIsSaving(true);
-                          const next = !sectionSettings.section_enabled;
-                          const res = await restaurantAdminService.updateSectionSettings(sectionSettings.id, {
-                            section_enabled: next,
-                          });
-                          setIsSaving(false);
-                          if (res.success && res.settings) {
-                            setSectionSettings(res.settings);
-                            showToast(next ? 'تم تفعيل قسم المطاعم بنجاح' : 'تم تعطيل قسم المطاعم مؤقتاً', 'success');
-                          } else {
-                            showToast(res.error || 'تعذر حفظ الإعداد', 'error');
-                          }
-                        }}
-                        className={`px-3 py-1.5 rounded-xl text-xs font-bold cursor-pointer transition ${
-                          sectionSettings.section_enabled
-                            ? 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-sm'
-                            : 'bg-rose-600 hover:bg-rose-500 text-white shadow-sm'
-                        }`}
-                      >
-                        {sectionSettings.section_enabled ? 'تعطيل القسم' : 'تفعيل القسم'}
-                      </button>
-                    </div>
-                    <p className="text-[10px] text-slate-500">
-                      يتحكم في إمكانية استقبال وإرسال طلبات الطعام الجديدة من العملاء.
-                    </p>
-                  </div>
-
-                  {/* Setting 2: Section Visibility */}
-                  <div className="p-4 rounded-2xl bg-slate-950/60 border border-slate-800 space-y-2">
-                    <div className="text-xs text-slate-400 font-bold">2. رؤية القسم في التطبيق (section_visibility)</div>
-                    <div className="flex items-center gap-2">
-                      <select
-                        value={sectionSettings.section_visibility || 'visible'}
-                        onChange={(e) =>
-                          setSectionSettings({
-                            ...sectionSettings,
-                            section_visibility: e.target.value as any,
-                          })
-                        }
-                        className="flex-1 bg-slate-900 border border-slate-700 rounded-xl px-2.5 py-1.5 text-xs text-white outline-none focus:border-amber-500"
-                      >
-                        <option value="visible">مرئي للجميع (visible)</option>
-                        <option value="hidden">مخفي بالكامل (hidden)</option>
-                      </select>
-                      <button
-                        type="button"
-                        disabled={isSaving}
-                        onClick={async () => {
-                          if (!hasPermission('restaurants.manage')) {
-                            showToast('ليس لديك صلاحية لتعديل إعدادات القسم', 'error');
-                            return;
-                          }
-                          setIsSaving(true);
-                          const res = await restaurantAdminService.updateSectionSettings(sectionSettings.id, {
-                            section_visibility: sectionSettings.section_visibility || 'visible',
-                          });
-                          setIsSaving(false);
-                          if (res.success && res.settings) {
-                            setSectionSettings(res.settings);
-                            showToast('تم حفظ إعداد ظهور القسم بنجاح', 'success');
-                          } else {
-                            showToast(res.error || 'تعذر الحفظ', 'error');
-                          }
-                        }}
-                        className="px-3 py-1.5 rounded-xl bg-amber-500 text-slate-950 font-bold text-xs cursor-pointer hover:bg-amber-400 transition"
-                      >
-                        حفظ
-                      </button>
-                    </div>
-                    <p className="text-[10px] text-slate-500">
-                      تحديد ما إذا كان قسم المطاعم يظهر في واجهة مستخدمي التطبيق أو يتم إخفاؤه تماماً.
-                    </p>
-                  </div>
-
-                  {/* Setting 3: Disabled Display Mode */}
-                  <div className="p-4 rounded-2xl bg-slate-950/60 border border-slate-800 space-y-2">
-                    <div className="text-xs text-slate-400 font-bold">3. العرض عند التعطيل (disabled_display_mode)</div>
-                    <div className="flex items-center gap-2">
-                      <select
-                        value={sectionSettings.disabled_display_mode || 'show_disabled'}
-                        onChange={(e) =>
-                          setSectionSettings({
-                            ...sectionSettings,
-                            disabled_display_mode: e.target.value as any,
-                          })
-                        }
-                        className="flex-1 bg-slate-900 border border-slate-700 rounded-xl px-2.5 py-1.5 text-xs text-white outline-none focus:border-amber-500"
-                      >
-                        <option value="show_disabled">إظهار كمعطل مع تنبيه (show_disabled)</option>
-                        <option value="hide">إخفاء القسم تلقائياً (hide)</option>
-                      </select>
-                      <button
-                        type="button"
-                        disabled={isSaving}
-                        onClick={async () => {
-                          if (!hasPermission('restaurants.manage')) {
-                            showToast('ليس لديك صلاحية لتعديل إعدادات القسم', 'error');
-                            return;
-                          }
-                          setIsSaving(true);
-                          const res = await restaurantAdminService.updateSectionSettings(sectionSettings.id, {
-                            disabled_display_mode: sectionSettings.disabled_display_mode || 'show_disabled',
-                          });
-                          setIsSaving(false);
-                          if (res.success && res.settings) {
-                            setSectionSettings(res.settings);
-                            showToast('تم حفظ طريقة العرض عند التعطيل بنجاح', 'success');
-                          } else {
-                            showToast(res.error || 'تعذر الحفظ', 'error');
-                          }
-                        }}
-                        className="px-3 py-1.5 rounded-xl bg-amber-500 text-slate-950 font-bold text-xs cursor-pointer hover:bg-amber-400 transition"
-                      >
-                        حفظ
-                      </button>
-                    </div>
-                    <p className="text-[10px] text-slate-500">
-                      سلوك الواجهة عندما يكون القسم معطلاً: إما يظهر للمستخدم كغير متاح أو يختفي كلياً.
-                    </p>
-                  </div>
-
-                </div>
-              </div>
-            )}
+            ) : null}
           </div>
 
           {/* ===================================================================

@@ -8,6 +8,31 @@ export const LAUNCH_SCOPE_GOVERNORATE_CODES: readonly string[] = ['SHG'];
 
 export type CentralServiceType = 'household_shortages' | 'pharmacy' | 'ready_food';
 
+export type AppSectionKey = CentralServiceType;
+
+export type AppDisabledDisplayMode = 'show_disabled' | 'hide';
+
+export type AppSectionDisplayWidth = 'full' | 'half';
+
+export interface AppSectionSetting {
+  section_key: AppSectionKey;
+  section_enabled: boolean;
+  section_visible: boolean;
+  delivery_enabled: boolean;
+  disabled_display_mode: AppDisabledDisplayMode | null;
+  display_width: AppSectionDisplayWidth | null;
+  updated_at: string | null;
+  updated_by: string | null;
+}
+
+export interface AppSectionSettingUpdateInput {
+  section_enabled?: boolean;
+  section_visible?: boolean;
+  delivery_enabled?: boolean;
+  disabled_display_mode?: AppDisabledDisplayMode | null;
+  display_width?: AppSectionDisplayWidth | null;
+}
+
 export type CentralDeliveryOwner = 'platform' | 'restaurant';
 
 export type CentralScopeLevel = 'governorate' | 'center' | 'area';

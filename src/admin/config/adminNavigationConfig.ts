@@ -105,6 +105,12 @@ export const ADMIN_MANAGEMENT_GROUPS: AdminManagementGroup[] = [
         permission: 'central_areas.view',
       },
       {
+        id: 'central_section_settings',
+        label: 'إعدادات الأقسام',
+        icon: Sliders,
+        permission: 'central_areas.view',
+      },
+      {
         id: 'central_geo',
         label: 'المناطق الجغرافية المعتمدة',
         icon: Globe,
@@ -184,7 +190,7 @@ export const ADMIN_MANAGEMENT_GROUPS: AdminManagementGroup[] = [
       },
       {
         id: 'pharmacy_settings',
-        label: 'إعدادات ومناطق الصيدلية',
+        label: 'إعدادات الصيدلية (منقولة)',
         icon: Sliders,
         permission: 'delivery.manage',
       },
